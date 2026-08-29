@@ -9,6 +9,9 @@ self_window=$(tmux display-message -p "#{session_name}:#{window_index}" 2>/dev/n
 tmp_list=$(mktemp)
 
 # 生成树状列表：session 名为标题行（field1 空），window 为可选行
+# 圈圈数字映射
+circles=(① ② ③ ④ ⑤ ⑥ ⑦ ⑧ ⑨ ⑩ ⑪ ⑫ ⑬ ⑭ ⑮ ⑯ ⑰ ⑱ ⑲ ⑳)
+
 tmux list-sessions -F '#{session_name}' 2>/dev/null | while IFS= read -r sname; do
     printf '\t\x1b[1;38;5;111m► %s\x1b[0m\t%s\n' "$sname" "$sname"
     tmux list-windows -t "$sname" -F "${sname}:#{window_index}" 2>/dev/null | while IFS= read -r target; do
@@ -16,7 +19,12 @@ tmux list-sessions -F '#{session_name}' 2>/dev/null | while IFS= read -r sname; 
         widx="${target##*:}"
         wname=$(tmux display-message -t "$target" -p '#{window_name}' 2>/dev/null)
         active=$(tmux display-message -t "$target" -p '#{?window_active,*,}' 2>/dev/null)
-        printf '%s\t    %s:%s %s\n' "$target" "$widx" "$wname" "$active"
+        if [[ "$widx" -ge 0 && "$widx" -le 19 ]] 2>/dev/null; then
+            circ="${circles[$widx]}"
+        else
+            circ="($widx)"
+        fi
+        printf '%s\t    \x1b[38;5;111m%s\x1b[0m %s %s\n' "$target" "$circ" "$wname" "$active"
     done
 done > "$tmp_list"
 
