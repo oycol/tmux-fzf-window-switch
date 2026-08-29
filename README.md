@@ -53,17 +53,6 @@ TMUX_WINDOW_SWITCH_KEY="x"
 set -g @plugin 'oycol/tmux-fzf-window-switch'
 ```
 
-### 方式2：手动 bind-key
-
-不使用插件入口的自动绑定，直接自己绑定：
-
-```tmux
-set -g @plugin 'oycol/tmux-fzf-window-switch'
-# 覆盖默认绑定
-unbind w
-bind x run-shell -t "#{session_id}" ~/.tmux/plugins/tmux-fzf-window-switch/scripts/switch.sh
-```
-
 ## 预览
 
 预览窗口在右侧 75%，实时刷新目标 window 画面：
