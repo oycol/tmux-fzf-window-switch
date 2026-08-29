@@ -21,13 +21,17 @@ tmp_list=$(mktemp)
 #   field3 = 类型标记（SESSION / CURRENT / 空）
 tmux list-sessions -F '#{session_name}' 2>/dev/null | while IFS= read -r sname; do
     printf '\t\x1b[1;38;5;111m► %s\x1b[0m\tSESSION\t%s\n' "$sname" "$sname"
-    tmux list-windows -t "$sname" -F "${sname}:#{window_index}" 2>/dev/null | while IFS= read -r target; do
+    tmux list-windows -t "$sname" -F "${sname}:#{window_index}|#{window_activity_flag}" 2>/dev/null | while IFS='|' read -r target activity; do
         widx="${target##*:}"
         wname=$(tmux display-message -t "$target" -p '#{window_name}' 2>/dev/null)
         if [[ "$target" == "$self_window" ]]; then
             printf '%s\t    \x1b[90m* %s %s\x1b[0m\tCURRENT\t\n' "$target" "$widx" "$wname"
         else
-            printf '%s\t    \x1b[38;5;111m%s\x1b[0m %s\t\t\n' "$target" "$widx" "$wname"
+            if [[ "$activity" == "1" ]]; then
+                printf '%s\t    \x1b[38;5;111m%s\x1b[0m %s \x1b[38;5;150m●\x1b[0m\t\t\n' "$target" "$widx" "$wname"
+            else
+                printf '%s\t    \x1b[38;5;111m%s\x1b[0m %s\t\t\n' "$target" "$widx" "$wname"
+            fi
         fi
     done
 done > "$tmp_list"
