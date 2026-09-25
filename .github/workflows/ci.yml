@@ -2,13 +2,13 @@ name: Switcher CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, refactor/** ]
   pull_request:
     branches: [ main ]
 
 jobs:
   test:
-    name: Regression & Tabby PTY E2E Tests
+    name: Regression & E2E Tests
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -25,23 +25,15 @@ jobs:
           fzf --version
           python3 --version
 
+      - name: Python syntax check
+        run: |
+          python3 -m py_compile scripts/switcher/*.py
+
       - name: Shell syntax check (bash -n)
         run: |
           bash -n scripts/*.sh
           bash -n tmux_fzf_window_switch.tmux
 
-      - name: Start temporary tmux server for tests
-        run: |
-          tmux new-session -d -s ci_test -x 120 -y 40
-          tmux new-window -t ci_test:1 -n worker
-          tmux list-windows -t ci_test
-
       - name: Run automated test suite
         run: |
-          python3 tests/test_switcher.py
-          python3 tests/test_real_tmux_e2e.py
-
-      - name: Teardown tmux server
-        if: always()
-        run: |
-          tmux kill-server 2>/dev/null || true
+          python3 -m unittest discover -s tests -v
