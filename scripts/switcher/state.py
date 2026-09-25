@@ -150,16 +150,27 @@ class AppState:
             if matched:
                 self.selected_window_id = matched.window_id
         elif key in ("\t", "KEY_BTAB"):
-            # Tab in BROWSE: toggle between pinned last window and source (current) window
-            if self.pinned_last_window_id:
-                if self.selected_window_id == self.pinned_last_window_id:
-                    # Currently on last window -> toggle back to source (current) window
-                    self.selected_window_id = self.source_window_id
-                    self.delete_armed_window_id = None
-                else:
-                    # Currently on source or another window -> toggle to last window
-                    self.selected_window_id = self.pinned_last_window_id
-                    self.delete_armed_window_id = self.selected_window_id
+            # Tab / Shift-Tab: cycle strictly WITHIN current session group
+            if not self.selected_window:
+                return
+            cur_sess = self.selected_window.session_name
+            # Gather all eligible windows belonging to this session
+            sess_windows = [w for w in eligible if w.session_name == cur_sess]
+            if not sess_windows:
+                return
+
+            try:
+                cur_in_sess_idx = sess_windows.index(self.selected_window)
+            except ValueError:
+                cur_in_sess_idx = 0
+
+            if key == "\t": # Tab: next window in same session (cycles back to first)
+                next_in_sess = (cur_in_sess_idx + 1) % len(sess_windows)
+            else: # Shift-Tab: prev window in same session (cycles to last)
+                next_in_sess = (cur_in_sess_idx - 1 + len(sess_windows)) % len(sess_windows)
+
+            self.selected_window_id = sess_windows[next_in_sess].window_id
+            self.delete_armed_window_id = self.selected_window_id
         elif key == "?":
             self.show_help = not self.show_help
 

@@ -167,16 +167,16 @@ class SwitcherApp:
         # "full-width final single help line OUTSIDE both body boxes; divider ends ABOVE help.
         # Footer text adaptive abbreviated for narrow screens; ? complete help. Entire help line never clipped mid-word"
         if self.state.show_help:
-            help_text = " [Enter]Switch [Tab]Last [-] [J/K]Session [^x]Kill [^p]Preview [v]Detail [/]Search [Esc]Back [q]Exit "
+            help_text = " [Enter]Switch [Tab]Session-Cycle [J/K]Jump-Session [j/k]Nav [^x]Kill [^p]Preview [v]Detail [/]Search [Esc]Back [q]Exit "
         elif self.state.status_msg:
             help_text = f" ! {self.state.status_msg} "
         else:
             if layout.help_w >= 100:
-                help_text = " [Enter] Switch  [Tab] Last [-]  [j/k] Nav  [J/K] Session  [^x] Kill  [^p] Preview  [?] Help  [q] Exit "
+                help_text = " [Enter] 切换  [Tab] 会话内循环  [J/K] 跨会话  [j/k] 逐行  [/] 搜索  [^x] 删除  [?] 帮助  [q] 退出 "
             elif layout.help_w >= 60:
-                help_text = " [Enter]Switch [Tab]Last [j/k]Nav [J/K]Sess [^x]Kill [?]Help [q]Exit "
+                help_text = " [Enter]切换 [Tab]会话内 [J/K]跨会话 [j/k]逐行 [/]搜索 [?]帮助 [q]退出 "
             else:
-                help_text = " Enter:Go Tab:Last J/K:Sess ?:Help q:Exit "
+                help_text = " Enter:切换 Tab:循环 J/K:会话 ?:帮助 q:退出 "
 
         try:
             stdscr.addstr(layout.help_y, layout.help_x, truncate_cell(help_text, layout.help_w), curses.color_pair(5))
@@ -308,13 +308,14 @@ class SwitcherApp:
         if ch == ord('q') and self.state.mode == Mode.BROWSE:
             return True
 
-        if ch in (curses.KEY_ENTER, 10, 13):
+        elif ch in (curses.KEY_ENTER, 10, 13):
             # Accept selection
             if self.state.mode == Mode.LOCATE:
                 target = self.state.resolve_locate_target()
                 if target:
                     if target.window_id == self.state.source_window_id:
-                        self.state.status_msg = "Cannot switch to source window"
+                        # Enter on source window: dismiss popup cleanly
+                        return True
                     else:
                         self.adapter.switch_client(target.window_id)
                         return True
@@ -323,8 +324,10 @@ class SwitcherApp:
                 return False
             else:
                 target = self.state.selected_window
-                if target and target.window_id != self.state.source_window_id:
-                    self.adapter.switch_client(target.window_id)
+                if target:
+                    if target.window_id != self.state.source_window_id:
+                        self.adapter.switch_client(target.window_id)
+                    # Enter on source or other window dismisses popup
                     return True
                 return False
 

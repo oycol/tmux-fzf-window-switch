@@ -89,24 +89,39 @@ class TestNavigation(unittest.TestCase):
         state.handle_key("K")
         self.assertEqual(state.selected_window.window_id, "@1")
 
-    def test_tab_toggle_between_last_and_current_window(self):
+    def test_tab_cycle_within_current_session(self):
         from scripts.switcher.state import AppState
 
-        # w0 is source (@0), w2 is last (@2)
+        # In self.groups:
+        # s0 has w0(cur), w1, w2(last)
+        # s1 has w3, w4
         state = AppState.create(self.groups, source_window_id="@0")
+        # Initially at @2 (in s0)
         self.assertEqual(state.selected_window_id, "@2")
 
-        # Press Tab -> toggles to source window @0
+        # Press Tab -> cycles to next eligible window in s0 -> @1
         state.handle_key("\t")
-        self.assertEqual(state.selected_window_id, "@0")
+        self.assertEqual(state.selected_window_id, "@1")
 
-        # Press Tab again -> toggles back to last window @2
+        # Press Tab -> cycles to next eligible window in s0 -> wraps to @2
         state.handle_key("\t")
         self.assertEqual(state.selected_window_id, "@2")
 
-        # Press Tab again -> toggles back to source window @0
+        # Press Shift-Tab (KEY_BTAB) -> cycles backward in s0 -> @1
+        state.handle_key("KEY_BTAB")
+        self.assertEqual(state.selected_window_id, "@1")
+
+        # Now jump to session 2 (s2) with 'J'
+        state.handle_key("J")
+        self.assertIsNotNone(state.selected_window)
+        self.assertEqual(state.selected_window.session_name, "s2")
+        self.assertEqual(state.selected_window_id, "@3")
+
+        # In s2, Tab cycles between @3 and @4 strictly inside s2
         state.handle_key("\t")
-        self.assertEqual(state.selected_window_id, "@0")
+        self.assertEqual(state.selected_window_id, "@4")
+        state.handle_key("\t")
+        self.assertEqual(state.selected_window_id, "@3")
 
 if __name__ == '__main__':
     unittest.main()
