@@ -56,7 +56,7 @@ class SwitcherApp:
                     break
                 continue
 
-            layout = compute_layout(w, h, preview_pct=55, show_preview=self.state.show_preview)
+            layout = compute_layout(w, h, preview_pct=60, show_preview=self.state.show_preview)
             self._render_frame(stdscr, layout)
             stdscr.refresh()
 
@@ -211,9 +211,10 @@ class SwitcherApp:
                 marker = "*" if w.is_current else ("-" if w.is_last else " ")
                 # Format: coordinate (alias.index), name, path
                 coord = f"{w.session_alias}.{w.window_index}"
-                # Path formatted
-                p_path = format_path(w.active_pane_path, 20)
-                w_str = f" {marker}  {coord:<5} {w.window_name:<12} {p_path}"
+                # Path formatted dynamically to use available width
+                remaining_w = max(10, layout.list_w - 22)
+                p_path = format_path(w.active_pane_path, remaining_w)
+                w_str = f" {marker}  {coord:<5} {w.window_name:<10} {p_path}"
                 is_sel = (w.window_id == selected_wid)
                 display_lines.append(('WINDOW', w_str, is_sel, w.is_current, w))
 
