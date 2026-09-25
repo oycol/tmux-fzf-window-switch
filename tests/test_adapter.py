@@ -25,13 +25,13 @@ class TestTmuxAdapter(unittest.TestCase):
         # "After deletion, refresh, adjacent eligible focus, disarm repeated deletion
         # until explicit navigation to a different eligible target. No-op navigation/refresh must not rearm."
         self.state.selected_window_id = "@1"
-        self.state.delete_armed_window_id = "@1"
+        self.state.delete_blocked = False
 
         # Simulate deletion of @1:
         # After deletion, state should focus @2, and disarm deletion
         self.state.on_window_deleted("@1")
         self.assertEqual(self.state.selected_window_id, "@2")
-        self.assertIsNone(self.state.delete_armed_window_id)
+        self.assertTrue(self.state.delete_blocked)
 
         # Attempting deletion again when disarmed must fail
         can_delete = self.state.can_delete_selected()
@@ -41,9 +41,9 @@ class TestTmuxAdapter(unittest.TestCase):
         self.state.handle_key("invalid_key")
         self.assertFalse(self.state.can_delete_selected())
 
-        # Explicit navigation to eligible target rearms
-        self.state.handle_key("j") # wraps back or moves
-        self.assertTrue(self.state.can_delete_selected())
+        # A single remaining candidate cannot rearm deletion by no-op navigation.
+        self.state.handle_key("j")
+        self.assertFalse(self.state.can_delete_selected())
 
 if __name__ == '__main__':
     unittest.main()

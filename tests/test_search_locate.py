@@ -70,7 +70,7 @@ class TestLocateAndSearch(unittest.TestCase):
         self.assertEqual(self.state.query, "jkq")
 
         # Esc in SEARCH returns to BROWSE while retaining query filter
-        self.state.handle_key("\x1b")
+        self.state.handle_key("ESC")
         self.assertEqual(self.state.mode, Mode.BROWSE)
         self.assertEqual(self.state.query, "jkq")
 

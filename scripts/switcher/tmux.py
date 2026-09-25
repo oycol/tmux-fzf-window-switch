@@ -1,5 +1,6 @@
 """Safe tmux client and server adapter with readback and stable IDs."""
 import subprocess
+import hashlib
 from typing import List, Dict, Tuple, Optional
 from scripts.switcher.model import Window, Pane, SessionGroup
 
@@ -16,6 +17,31 @@ class TmuxAdapter:
         proc = subprocess.run(cmd, capture_output=True, text=True)
         return proc.returncode, proc.stdout, proc.stderr
 
+    def _return_option(self) -> str:
+        """Server-scoped option keyed by the explicit client instance, not reusable TTY alone."""
+        if not self.client_target:
+            raise RuntimeError("Explicit tmux client required for switch history")
+        fmt = "#{client_tty}\t#{client_pid}\t#{client_created}"
+        code, out, err = self._cmd(["display-message", "-c", self.client_target, "-p", fmt])
+        parts = out.strip().split("\t")
+        if code != 0 or len(parts) != 3 or not all(parts):
+            raise RuntimeError(err.strip() or "Client identity unavailable")
+        return "@window_switch_return_" + hashlib.sha256(out.strip().encode()).hexdigest()[:24]
+
+    def get_return_window_id(self) -> Optional[str]:
+        code, out, err = self._cmd(["show-options", "-gqv", self._return_option()])
+        if code != 0:
+            raise RuntimeError(err.strip() or "Cannot read return window")
+        return out.strip() or None
+
+    def set_return_window_id(self, source_window_id: str) -> None:
+        option = self._return_option()
+        code, _, err = self._cmd(["set-option", "-g", option, source_window_id])
+        if code != 0:
+            raise RuntimeError(err.strip() or "Cannot save return window")
+        if self.get_return_window_id() != source_window_id:
+            raise RuntimeError("Return window readback mismatch")
+
     def get_source_window_id(self) -> str:
         """Get source window stable ID #{window_id} for the current client."""
         args = ["display-message"]
@@ -23,6 +49,8 @@ class TmuxAdapter:
             args.extend(["-c", self.client_target])
         args.extend(["-p", "#{window_id}"])
         code, out, err = self._cmd(args)
+        if code != 0 or not out.strip():
+            raise RuntimeError(err.strip() or "Cannot identify source window")
         return out.strip()
 
     def get_snapshot(self) -> Tuple[List[SessionGroup], str]:
@@ -35,12 +63,16 @@ class TmuxAdapter:
         # Query windows format
         # session_id, session_name, window_id, window_index, window_name, window_active, window_last_flag
         w_format = "#{session_id}\t#{session_name}\t#{window_id}\t#{window_index}\t#{window_name}\t#{window_active}\t#{window_last_flag}\t#{pane_id}\t#{pane_current_command}\t#{pane_current_path}"
-        code, out, _ = self._cmd(["list-windows", "-a", "-F", w_format])
+        code, out, err = self._cmd(["list-windows", "-a", "-F", w_format])
+        if code != 0:
+            raise RuntimeError(err.strip() or "Cannot list windows")
         
         # Query panes format
         # window_id, pane_id, pane_index, pane_title, pane_current_command, pane_current_path, pane_pid, pane_active, pane_width, pane_height, pane_left, pane_top
         p_format = "#{window_id}\t#{pane_id}\t#{pane_index}\t#{pane_title}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_pid}\t#{pane_active}\t#{pane_width}\t#{pane_height}\t#{pane_left}\t#{pane_top}"
-        _, p_out, _ = self._cmd(["list-panes", "-a", "-F", p_format])
+        code, p_out, err = self._cmd(["list-panes", "-a", "-F", p_format])
+        if code != 0:
+            raise RuntimeError(err.strip() or "Cannot list panes")
 
         panes_by_win: Dict[str, List[Pane]] = {}
         for line in p_out.splitlines():
@@ -93,7 +125,7 @@ class TmuxAdapter:
 
     def capture_pane(self, pane_id: str, num_lines: int = 50) -> List[str]:
         """Capture visible pane content read-only without modifying pane state."""
-        code, out, _ = self._cmd(["capture-pane", "-p", "-t", pane_id, "-S", f"-{num_lines}"])
+        code, out, _ = self._cmd(["capture-pane", "-p", "-t", pane_id])
         if code == 0:
             return out.splitlines()
         return []
@@ -105,11 +137,33 @@ class TmuxAdapter:
             args.extend(["-c", self.client_target])
         args.extend(["-t", target_window_id])
         code, out, err = self._cmd(args)
-        return (code == 0, err.strip() if code != 0 else "")
+        if code != 0:
+            return False, err.strip()
+        try:
+            actual = self.get_source_window_id()
+        except RuntimeError as exc:
+            return False, str(exc)
+        if actual != target_window_id:
+            return False, f"Switch readback mismatch: {actual}"
+        return True, ""
 
     def kill_window(self, target_window_id: str, source_window_id: str) -> Tuple[bool, str]:
         """Kill window safely using stable window ID. Never kills source window."""
         if target_window_id == source_window_id:
             return False, "Deleting source window is strictly forbidden"
+        try:
+            if self.get_source_window_id() != source_window_id:
+                return False, "Source window changed; deletion cancelled"
+            groups, _ = self.get_snapshot()
+        except RuntimeError as exc:
+            return False, str(exc)
+        matches = [w for g in groups for w in g.windows if w.window_id == target_window_id]
+        if len(matches) != 1:
+            return False, "Target window missing or linked; deletion cancelled"
         code, out, err = self._cmd(["kill-window", "-t", target_window_id])
-        return (code == 0, err.strip() if code != 0 else "")
+        if code != 0:
+            return False, err.strip()
+        code, remaining, err = self._cmd(["list-windows", "-a", "-F", "#{window_id}"])
+        if code != 0 or target_window_id in remaining.splitlines():
+            return False, err.strip() or "Deletion readback failed"
+        return True, ""

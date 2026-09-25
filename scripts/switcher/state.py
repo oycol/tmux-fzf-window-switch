@@ -1,4 +1,4 @@
-"""State machine and reducers for switcher."""
+"""Window switcher state; navigation is independent of tmux per-session history."""
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import List, Optional, Dict
@@ -17,256 +17,162 @@ class AppState:
     query: str = ""
     locate_buf: str = ""
     show_preview: bool = True
-    preview_detail_mode: bool = False # False = layout 2D, True = single-pane detail
+    preview_detail_mode: bool = False
     selected_pane_idx: int = 0
     show_help: bool = False
     status_msg: str = ""
     selected_window_id: Optional[str] = None
-    pinned_last_window_id: Optional[str] = None
-    delete_armed_window_id: Optional[str] = None # For Ctrl-x repeat guard
-
-    # Session alias mapping preserved across filters
+    return_window_id: Optional[str] = None
+    delete_blocked: bool = False
+    locate_previous_id: Optional[str] = None
     session_aliases: Dict[str, str] = field(default_factory=dict)
 
     @classmethod
-    def create(cls, groups: List[SessionGroup], source_window_id: str) -> "AppState":
-        state = cls(groups=groups, source_window_id=source_window_id)
-
-        # Build stable session aliases: 1, 2, 3...
-        for idx, g in enumerate(groups, start=1):
-            state.session_aliases[g.session_name] = str(idx)
-            g.session_alias = str(idx)
-            for w in g.windows:
-                w.session_alias = str(idx)
-
-        # Pin last window from source session
-        for g in groups:
-            for w in g.windows:
-                if w.is_last and w.session_id == getattr(state.source_group, "session_id", None):
-                    state.pinned_last_window_id = w.window_id
-
-        # Find initial selected window: pinned last window if switchable, else first switchable
-        eligible = state.get_eligible_windows()
-        if state.pinned_last_window_id:
-            for w in eligible:
-                if w.window_id == state.pinned_last_window_id:
-                    state.selected_window_id = w.window_id
-                    break
-        if not state.selected_window_id and eligible:
-            state.selected_window_id = eligible[0].window_id
-
+    def create(cls, groups: List[SessionGroup], source_window_id: str,
+               return_window_id: Optional[str] = None) -> "AppState":
+        state = cls(groups=groups, source_window_id=source_window_id,
+                    return_window_id=return_window_id)
+        state.replace_groups(groups)
+        candidates = state.get_eligible_windows()
+        if return_window_id and any(w.window_id == return_window_id for w in candidates):
+            state.selected_window_id = return_window_id
+        elif candidates:
+            source = state.source_group
+            local = next((w for w in candidates if source and w.session_id == source.session_id), None)
+            state.selected_window_id = (local or candidates[0]).window_id
+        if return_window_id and state.selected_window_id != return_window_id:
+            state.status_msg = "Return window no longer available"
+        state.delete_blocked = False
         return state
+
+    def replace_groups(self, groups: List[SessionGroup]):
+        self.groups = groups
+        for g in groups:
+            if g.session_id not in self.session_aliases:
+                self.session_aliases[g.session_id] = str(len(self.session_aliases) + 1)
+            g.session_alias = self.session_aliases[g.session_id]
+            for w in g.windows:
+                w.session_alias = g.session_alias
+        self.reconcile_selection()
 
     @property
     def source_group(self) -> Optional[SessionGroup]:
-        for g in self.groups:
-            for w in g.windows:
-                if w.window_id == self.source_window_id:
-                    return g
-        return None
+        return next((g for g in self.groups if any(w.window_id == self.source_window_id for w in g.windows)), None)
 
     def get_eligible_windows(self) -> List[Window]:
-        """Return all switchable windows (excluding source window), matching query if filtered."""
         from scripts.switcher.fzf import fzf_filter_windows
         return fzf_filter_windows(self.groups, self.query, self.source_window_id)
 
     @property
     def selected_window(self) -> Optional[Window]:
-        if not self.selected_window_id:
-            return None
-        for g in self.groups:
-            for w in g.windows:
-                if w.window_id == self.selected_window_id:
-                    return w
-        return None
+        return next((w for g in self.groups for w in g.windows if w.window_id == self.selected_window_id), None)
+
+    def reconcile_selection(self):
+        eligible = self.get_eligible_windows()
+        if self.selected_window_id not in {w.window_id for w in eligible}:
+            self.selected_window_id = eligible[0].window_id if eligible else None
+            self.delete_blocked = True
+
+    def move_to(self, wid: str):
+        if wid != self.selected_window_id:
+            self.selected_window_id = wid
+            self.selected_pane_idx = 0
+            self.delete_blocked = False
 
     def handle_key(self, key: str):
-        """Process a key event in current mode."""
-        if self.mode == Mode.BROWSE:
-            self._handle_browse_key(key)
-        elif self.mode == Mode.SEARCH:
-            self._handle_search_key(key)
-        elif self.mode == Mode.LOCATE:
-            self._handle_locate_key(key)
+        if self.mode == Mode.SEARCH:
+            if key == "KEY_BACKSPACE":
+                self.query = self.query[:-1]
+            elif key == "ESC":
+                self.mode = Mode.BROWSE
+                return
+            elif key in ("KEY_UP", "KEY_DOWN"):
+                self._navigate("k" if key == "KEY_UP" else "j")
+                return
+            elif len(key) == 1 and key.isprintable():
+                self.query += key
+            self.reconcile_selection()
+            return
+        if self.mode == Mode.LOCATE:
+            if key == "ESC":
+                self.mode = Mode.BROWSE
+                self.locate_buf = ""
+                self.selected_window_id = self.locate_previous_id
+                self.reconcile_selection()
+                return
+            if key == "KEY_BACKSPACE":
+                self.locate_buf = self.locate_buf[:-1]
+                if not self.locate_buf:
+                    self.mode = Mode.BROWSE
+                    self.selected_window_id = self.locate_previous_id
+                    self.reconcile_selection()
+                    return
+            elif len(key) == 1 and key.isprintable():
+                self.locate_buf += key
+            target = self.resolve_locate_target()
+            if target and target.window_id != self.source_window_id:
+                self.move_to(target.window_id)
+            return
+        if key == "/":
+            self.mode = Mode.SEARCH
+            self.status_msg = ""
+        elif len(key) == 1 and key in "123456789:":
+            self.mode = Mode.LOCATE
+            self.locate_previous_id = self.selected_window_id
+            self.locate_buf = key
+            self.status_msg = ""
+        elif key == "?":
+            self.show_help = not self.show_help
+        else:
+            self._navigate(key)
 
-    def _handle_browse_key(self, key: str):
+    def _navigate(self, key: str):
         eligible = self.get_eligible_windows()
         if not eligible:
             return
-
-        cur_idx = -1
-        for i, w in enumerate(eligible):
-            if w.window_id == self.selected_window_id:
-                cur_idx = i
-                break
-
+        ids = [w.window_id for w in eligible]
+        pos = ids.index(self.selected_window_id) if self.selected_window_id in ids else -1
         if key in ("j", "KEY_DOWN"):
-            next_idx = (cur_idx + 1) % len(eligible)
-            self.selected_window_id = eligible[next_idx].window_id
-            self.delete_armed_window_id = self.selected_window_id
+            self.move_to(ids[(pos + 1) % len(ids)])
         elif key in ("k", "KEY_UP"):
-            prev_idx = (cur_idx - 1 + len(eligible)) % len(eligible)
-            self.selected_window_id = eligible[prev_idx].window_id
-            self.delete_armed_window_id = self.selected_window_id
-        elif key in ("J", "]"):
-            # Jump to first eligible window in next session group
-            cur_sess = self.selected_window.session_name if self.selected_window else None
-            unique_sessions = []
-            for w in eligible:
-                if w.session_name not in unique_sessions:
-                    unique_sessions.append(w.session_name)
-            if len(unique_sessions) > 1:
-                cur_s_idx = unique_sessions.index(cur_sess) if cur_sess in unique_sessions else 0
-                next_s = unique_sessions[(cur_s_idx + 1) % len(unique_sessions)]
-                for w in eligible:
-                    if w.session_name == next_s:
-                        self.selected_window_id = w.window_id
-                        self.delete_armed_window_id = self.selected_window_id
-                        break
-        elif key in ("K", "["):
-            # Jump to first eligible window in prev session group
-            cur_sess = self.selected_window.session_name if self.selected_window else None
-            unique_sessions = []
-            for w in eligible:
-                if w.session_name not in unique_sessions:
-                    unique_sessions.append(w.session_name)
-            if len(unique_sessions) > 1:
-                cur_s_idx = unique_sessions.index(cur_sess) if cur_sess in unique_sessions else 0
-                prev_s = unique_sessions[(cur_s_idx - 1 + len(unique_sessions)) % len(unique_sessions)]
-                for w in eligible:
-                    if w.session_name == prev_s:
-                        self.selected_window_id = w.window_id
-                        self.delete_armed_window_id = self.selected_window_id
-                        break
-        elif key == "/":
-            self.mode = Mode.SEARCH
-            self.status_msg = ""
-        if key in ("1", "2", "3", "4", "5", "6", "7", "8", "9", ":"):
-            self.mode = Mode.LOCATE
-            self.locate_buf = key
-            self.status_msg = ""
-            # Auto-preview target immediately upon typing coordinate
-            matched = self.resolve_locate_target()
-            if matched:
-                self.selected_window_id = matched.window_id
-        elif key in ("\t", "KEY_BTAB"):
-            # Tab / Shift-Tab: cycle strictly WITHIN current session group
-            if not self.selected_window:
+            self.move_to(ids[(pos - 1) % len(ids)])
+        elif key in ("J", "K"):
+            sids = list(dict.fromkeys(w.session_id for w in eligible))
+            if len(sids) < 2:
                 return
-            cur_sess = self.selected_window.session_name
-            # Gather all eligible windows belonging to this session
-            sess_windows = [w for w in eligible if w.session_name == cur_sess]
-            if not sess_windows:
-                return
-
-            try:
-                cur_in_sess_idx = sess_windows.index(self.selected_window)
-            except ValueError:
-                cur_in_sess_idx = 0
-
-            if key == "\t": # Tab: next window in same session (cycles back to first)
-                next_in_sess = (cur_in_sess_idx + 1) % len(sess_windows)
-            else: # Shift-Tab: prev window in same session (cycles to last)
-                next_in_sess = (cur_in_sess_idx - 1 + len(sess_windows)) % len(sess_windows)
-
-            self.selected_window_id = sess_windows[next_in_sess].window_id
-            self.delete_armed_window_id = self.selected_window_id
-        elif key == "?":
-            self.show_help = not self.show_help
-
-    def _handle_search_key(self, key: str):
-        if key in ("KEY_BACKSPACE", "\b", "\x7f"):
-            self.query = self.query[:-1]
-        elif key in ("\x1b", "ESC"): # Escape
-            # Retain filter, return to BROWSE
-            self.mode = Mode.BROWSE
-        elif len(key) == 1 and key.isprintable():
-            self.query += key
+            current = self.selected_window.session_id if self.selected_window else None
+            idx = sids.index(current) if current in sids else 0
+            dest = sids[(idx + (1 if key == "J" else -1)) % len(sids)]
+            options = [w for w in eligible if w.session_id == dest]
+            self.move_to(next((w.window_id for w in options if w.is_active), options[0].window_id))
 
     def resolve_locate_target(self) -> Optional[Window]:
-        """
-        Resolve exact target from locate_buf.
-        Supports:
-          - S.W (e.g. "2.1"): exact session alias S and window index W
-          - :S:W (e.g. ":bios:2"): exact session name bios and window index 2
-        Never fuzzy matches or permits prefix collisions.
-        """
         buf = self.locate_buf.strip()
-        if not buf:
-            return None
-
-        # Format 1: :<session_name>:<window_index>
         if buf.startswith(":"):
-            parts = buf[1:].split(":")
-            if len(parts) == 2:
-                sname, widx_str = parts
-                if widx_str.isdigit():
-                    widx = int(widx_str)
-                    for g in self.groups:
-                        if g.session_name == sname:
-                            for w in g.windows:
-                                if w.window_index == widx:
-                                    return w
+            parts = buf[1:].rsplit(":", 1)
+            if len(parts) != 2 or not parts[1].isascii() or not parts[1].isdigit():
+                return None
+            return next((w for g in self.groups if g.session_name == parts[0]
+                         for w in g.windows if w.window_index == int(parts[1])), None)
+        parts = buf.split(".")
+        if len(parts) != 2 or not parts[0].isascii() or not parts[0].isdigit() or not parts[1].isascii() or not parts[1].isdigit():
             return None
-
-        # Format 2: <session_alias>.<window_index>
-        if "." in buf:
-            parts = buf.split(".")
-            if len(parts) == 2:
-                s_alias, widx_str = parts
-                if widx_str.isdigit():
-                    widx = int(widx_str)
-                    for g in self.groups:
-                        if g.session_alias == s_alias:
-                            for w in g.windows:
-                                if w.window_index == widx:
-                                    return w
-            return None
-
-        return None
+        return next((w for g in self.groups if g.session_alias == parts[0]
+                     for w in g.windows if w.window_index == int(parts[1])), None)
 
     def can_delete_selected(self) -> bool:
-        """Check if currently selected window is armed for deletion."""
-        if not self.selected_window_id:
-            return False
-        if self.selected_window_id == self.source_window_id:
-            return False
-        return self.delete_armed_window_id == self.selected_window_id
+        return (self.mode == Mode.BROWSE and not self.delete_blocked and
+                self.selected_window_id is not None and
+                self.selected_window_id != self.source_window_id and
+                self.selected_window_id in {w.window_id for w in self.get_eligible_windows()})
 
     def on_window_deleted(self, deleted_window_id: str):
-        """Update state after a window is deleted: focus adjacent and disarm."""
-        # Find adjacent eligible window
-        eligible_before = self.get_eligible_windows()
-        next_focus_id = None
-        for i, w in enumerate(eligible_before):
-            if w.window_id == deleted_window_id:
-                if i + 1 < len(eligible_before):
-                    next_focus_id = eligible_before[i + 1].window_id
-                elif i - 1 >= 0:
-                    next_focus_id = eligible_before[i - 1].window_id
-                break
-
-        # Remove deleted window from groups
+        before = [w.window_id for w in self.get_eligible_windows()]
+        idx = before.index(deleted_window_id) if deleted_window_id in before else 0
+        self.selected_window_id = None
         for g in self.groups:
             g.windows = [w for w in g.windows if w.window_id != deleted_window_id]
         self.groups = [g for g in self.groups if g.windows]
-
-        self.selected_window_id = next_focus_id
-        # Disarm repeated deletion until explicit navigation!
-        self.delete_armed_window_id = None
-
-    def _handle_locate_key(self, key: str):
-        if key in ("KEY_BACKSPACE", "\b", "\x7f"):
-            self.locate_buf = self.locate_buf[:-1]
-            if not self.locate_buf:
-                self.mode = Mode.BROWSE
-        elif key in ("\x1b", "ESC"):
-            self.locate_buf = ""
-            self.mode = Mode.BROWSE
-        elif len(key) == 1 and key.isprintable():
-            self.locate_buf += key
-
-        # Dynamically focus target if locate_buf resolves to a valid window
-        matched = self.resolve_locate_target()
-        if matched:
-            self.selected_window_id = matched.window_id
+        after = [w.window_id for w in self.get_eligible_windows()]
+        self.selected_window_id = after[min(idx, len(after)-1)] if after else None
+        self.delete_blocked = True

@@ -81,13 +81,14 @@ def compute_layout(width: int, height: int, preview_pct: int = 50, show_preview:
       "Outer border/title, full-width top mode/input line, split body with session list and preview,
        full-width final single help line OUTSIDE both body boxes; divider ends ABOVE help."
     - Bottom help line: y=height-2, x=1, w=width-2
-    - Body area: y from 3 to height-3 (if input at y=1 and separator at y=2)
+    - Body area: y from 3 to height-4; height-3 is the help separator
       or y from 2 to height-3 (if border below input).
       Let's use:
       y=0: top outer border
       y=1: full-width input/mode line
       y=2: horizontal divider between input and body
-      y=3 .. height-3: split body (list | divider | preview)
+      y=3 .. height-4: split body (list | divider | preview)
+      y=height-3: full-width separator
       y=height-2: full-width help line outside body boxes
       y=height-1: bottom outer border
     """
@@ -107,9 +108,9 @@ def compute_layout(width: int, height: int, preview_pct: int = 50, show_preview:
     help_x = 1
     help_w = inner_w
 
-    # Body runs from y=3 to y=total_h-3
+    # Body ends above its dedicated full-width separator.
     body_top_y = 3
-    body_bottom_y = max(body_top_y, total_h - 3)
+    body_bottom_y = max(body_top_y, total_h - 4)
 
     # Determine preview visibility based on width
     # Small terminal degrades optional cols -> single pane -> no preview

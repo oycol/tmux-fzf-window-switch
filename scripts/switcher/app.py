@@ -18,7 +18,8 @@ class SwitcherApp:
 
     def init_state(self):
         groups, src_wid = self.adapter.get_snapshot()
-        self.state = AppState.create(groups, source_window_id=src_wid)
+        return_id = self.adapter.get_return_window_id() if self.adapter.client_target else None
+        self.state = AppState.create(groups, source_window_id=src_wid, return_window_id=return_id)
 
     def run(self, stdscr):
         curses.curs_set(0) # Hide cursor
@@ -152,7 +153,7 @@ class SwitcherApp:
             except Exception:
                 pass
 
-        # Separator above help line (y = layout.help_y - 1)
+        # Place body separator outside body, immediately above the full-width help.
         sep_y = layout.help_y - 1
         try:
             stdscr.addstr(sep_y, 1, "─" * layout.inner_w, curses.color_pair(1))
@@ -167,24 +168,50 @@ class SwitcherApp:
         # "full-width final single help line OUTSIDE both body boxes; divider ends ABOVE help.
         # Footer text adaptive abbreviated for narrow screens; ? complete help. Entire help line never clipped mid-word"
         if self.state.show_help:
-            help_text = " [Enter]Switch [Tab]Session-Cycle [J/K]Jump-Session [j/k]Nav [^x]Kill [^p]Preview [v]Detail [/]Search [Esc]Back [q]Exit "
+            help_text = " 帮助视图  ·  ? / Esc 返回 "
         elif self.state.status_msg:
             help_text = f" ! {self.state.status_msg} "
         else:
             if layout.help_w >= 100:
-                help_text = " [Enter] 切换  [Tab] 会话内循环  [J/K] 跨会话  [j/k] 逐行  [/] 搜索  [^x] 删除  [?] 帮助  [q] 退出 "
+                help_text = " Enter 切换  J/K 跨会话  j/k 逐窗  / 搜索  ^x 直接删除  ? 帮助  q 退出 "
             elif layout.help_w >= 60:
-                help_text = " [Enter]切换 [Tab]会话内 [J/K]跨会话 [j/k]逐行 [/]搜索 [?]帮助 [q]退出 "
+                help_text = " Enter切换 J/K跨会话 j/k逐窗 /搜索 ^x删除 ?帮助 q退出 "
             else:
-                help_text = " Enter:切换 Tab:循环 J/K:会话 ?:帮助 q:退出 "
+                help_text = " Enter切换 J/K会话 ?:帮助 q:退出 "
 
         try:
             stdscr.addstr(layout.help_y, layout.help_x, truncate_cell(help_text, layout.help_w), curses.color_pair(5))
         except Exception:
             pass
 
+        if self.state.show_help:
+            self._render_help(stdscr, layout)
+
+    def _render_help(self, stdscr, layout: LayoutInfo):
+        """Use the body as a readable help page; keep the footer full-width."""
+        lines = [
+            "操作帮助  ·  ? / Esc 返回",
+            "j/k 或 ↑/↓    逐个窗口循环",
+            "J/K             跨 Session；优先活动窗口",
+            "Enter           切换选中窗口；直接返回上次位置",
+            "/               搜索；Esc 保留过滤词",
+            "数字 / :         精确定位：2.2 / :bios:2",
+            "Ctrl-x          立即删除非源窗口；移动后可再次删除",
+            "Ctrl-p / v      显隐预览 / 单 Pane 详情",
+            "[ / ]           切换预览 Pane（不影响真实 Pane）",
+            "Ctrl-r / Ctrl-u 刷新快照 / 清除过滤",
+            "● 源窗口   ↩ 返回窗口   Tab 未绑定",
+            "q / Esc         退出浏览",
+        ]
+        for i, text in enumerate(lines[:layout.body_bottom_y - layout.body_top_y + 1]):
+            y = layout.body_top_y + i
+            clipped = truncate_cell(text, layout.inner_w)
+            stdscr.addstr(y, layout.inner_x,
+                          clipped + " " * (layout.inner_w - str_cell_width(clipped)),
+                          curses.color_pair(5))
+
     def _render_list(self, stdscr, layout: LayoutInfo):
-        # Render sessions and windows within body_top_y..body_bottom_y
+        # The row above help is reserved for a full-width separator.
         max_rows = layout.body_bottom_y - layout.body_top_y + 1
         if max_rows <= 0:
             return
@@ -201,20 +228,21 @@ class SwitcherApp:
             if not matching_in_g:
                 continue
 
-            header_str = f"► [{g.session_alias}] {g.session_name} ({len(g.windows)} win)"
+            header_str = f"[{g.session_alias}] {g.session_name}  ·  {len(g.windows)} windows"
             display_lines.append(('HEADER', header_str, False, False, None))
 
             for w in g.windows:
                 if w not in eligible and not w.is_current:
                     continue
-                # Marker: * current, - last, space otherwise
-                marker = "*" if w.is_current else ("-" if w.is_last else " ")
-                # Format: coordinate (alias.index), name, path
+                marker = "●" if w.is_current else ("↩" if w.window_id == self.state.return_window_id else " ")
                 coord = f"{w.session_alias}.{w.window_index}"
-                # Path formatted dynamically to use available width
-                remaining_w = max(10, layout.list_w - 22)
-                p_path = format_path(w.active_pane_path, remaining_w)
-                w_str = f" {marker}  {coord:<5} {w.window_name:<10} {p_path}"
+                pane_label = f"{len(w.panes)}P"
+                name_budget = max(8, min(18, layout.list_w // 4))
+                name = truncate_cell(sanitize_text_line(w.window_name, name_budget), name_budget)
+                fixed = f" {marker} {coord:<6} {name:<{name_budget}} "
+                path_budget = max(0, layout.list_w - str_cell_width(fixed) - str_cell_width(pane_label) - 2)
+                path_text = format_path(sanitize_text_line(w.active_pane_path, 300), path_budget)
+                w_str = f"{fixed}{path_text:<{path_budget}} {pane_label}"
                 is_sel = (w.window_id == selected_wid)
                 display_lines.append(('WINDOW', w_str, is_sel, w.is_current, w))
 
@@ -296,40 +324,42 @@ class SwitcherApp:
         """Handle key input. Returns True if application should exit."""
         # Key conversions
         if ch == 27: # Escape
-            if self.state.mode == Mode.SEARCH:
-                self.state.mode = Mode.BROWSE
-            elif self.state.mode == Mode.LOCATE:
-                self.state.locate_buf = ""
-                self.state.mode = Mode.BROWSE
+            if self.state.show_help:
+                self.state.show_help = False
+            elif self.state.mode in (Mode.SEARCH, Mode.LOCATE):
+                self.state.handle_key("ESC")
             else:
-                return True # Quit from browse
+                return True
+            return False
+
+        if self.state.show_help:
+            if ch == ord('?'):
+                self.state.show_help = False
             return False
 
         if ch == ord('q') and self.state.mode == Mode.BROWSE:
             return True
 
         elif ch in (curses.KEY_ENTER, 10, 13):
-            # Accept selection
             if self.state.mode == Mode.LOCATE:
                 target = self.state.resolve_locate_target()
-                if target:
-                    if target.window_id == self.state.source_window_id:
-                        # Enter on source window: dismiss popup cleanly
-                        return True
-                    else:
-                        self.adapter.switch_client(target.window_id)
-                        return True
-                else:
-                    self.state.status_msg = f"Target not found: {self.state.locate_buf}"
-                return False
             else:
-                target = self.state.selected_window
-                if target:
-                    if target.window_id != self.state.source_window_id:
-                        self.adapter.switch_client(target.window_id)
-                    # Enter on source or other window dismisses popup
-                    return True
+                target = self.state.selected_window if self.state.selected_window_id in {
+                    w.window_id for w in self.state.get_eligible_windows()} else None
+            if not target or target.window_id == self.state.source_window_id:
+                self.state.status_msg = "No switchable target selected"
                 return False
+            ok, err = self.adapter.switch_client(target.window_id)
+            if not ok:
+                self.state.status_msg = f"Switch failed: {err}"
+                return False
+            try:
+                if self.adapter.client_target:
+                    self.adapter.set_return_window_id(self.state.source_window_id)
+            except RuntimeError as exc:
+                # The client already switched: report honestly, do not claim history was saved.
+                self.state.status_msg = f"Switched, but return target was not saved: {exc}"
+            return True
 
         # Detail mode toggle: 'v'
         if ch == ord('v') and self.state.mode == Mode.BROWSE:
@@ -359,26 +389,40 @@ class SwitcherApp:
                     ok, err = self.adapter.kill_window(wid_to_del, self.state.source_window_id)
                     if ok:
                         self.state.on_window_deleted(wid_to_del)
+                        try:
+                            fresh, src = self.adapter.get_snapshot()
+                            if src != self.state.source_window_id:
+                                self.state.status_msg = "Source changed; close and reopen"
+                            else:
+                                self.state.replace_groups(fresh)
+                                self.pane_cache.clear()
+                        except RuntimeError as exc:
+                            self.state.status_msg = f"Deleted; refresh failed: {exc}"
                     else:
                         self.state.status_msg = f"Kill error: {err}"
                 else:
                     self.state.status_msg = "Delete disabled. Move selection first."
             return False
 
-        # Ctrl-p (toggle preview)
-        if ch == 16: # Ctrl-p
+        if ch == 16 and self.state.mode == Mode.BROWSE: # Ctrl-p
             self.state.show_preview = not self.state.show_preview
             return False
 
-        # Ctrl-r (refresh)
-        if ch == 18: # Ctrl-r
-            self.init_state()
-            self.pane_cache.clear()
+        if ch == 18 and self.state.mode == Mode.BROWSE: # Ctrl-r
+            try:
+                fresh, src = self.adapter.get_snapshot()
+                if src != self.state.source_window_id:
+                    self.state.status_msg = "Source changed; close and reopen"
+                else:
+                    self.state.replace_groups(fresh)
+                    self.pane_cache.clear()
+            except RuntimeError as exc:
+                self.state.status_msg = f"Refresh failed: {exc}"
             return False
 
-        # Ctrl-u (clear query in browse)
-        if ch == 21: # Ctrl-u
+        if ch == 21 and self.state.mode == Mode.BROWSE: # Ctrl-u
             self.state.query = ""
+            self.state.reconcile_selection()
             return False
 
         # Convert to string key for state handler
@@ -386,12 +430,15 @@ class SwitcherApp:
             k = "KEY_DOWN"
         elif ch == curses.KEY_UP:
             k = "KEY_UP"
-        elif ch == 9: # Tab
-            k = "\t"
+        elif ch == 9 or ch == curses.KEY_BTAB: # Tab is intentionally unbound
+            return False
         elif ch in (curses.KEY_BACKSPACE, 127, 8):
             k = "KEY_BACKSPACE"
-        elif 32 <= ch <= 126:
-            k = chr(ch)
+        elif 32 <= ch <= 0x10ffff:
+            try:
+                k = chr(ch)
+            except ValueError:
+                k = ""
         else:
             k = ""
 
@@ -410,7 +457,10 @@ def main():
     if not sock and "TMUX" in os.environ:
         sock = os.environ["TMUX"].split(",")[0]
 
-    adapter = TmuxAdapter(socket_path=sock, client_target=args.client)
+    client = args.client or os.environ.get("TMUX_SWITCH_CLIENT")
+    if not client:
+        parser.error("Explicit --client is required for per-client switch history")
+    adapter = TmuxAdapter(socket_path=sock, client_target=client)
     app = SwitcherApp(adapter)
     curses.wrapper(app.run)
 
