@@ -85,12 +85,14 @@ set -g @plugin 'oycol/tmux-fzf-window-switch'
 ## 自动化测试与 CI
 
 本仓库配置有完整的 GitHub Actions 持续集成工作流（`.github/workflows/ci.yml`），包含：
-- ShellCheck 与 `bash -n` 语法检查；
-- 真实无头 PTY 终端交互测试（模拟 Tabby 环境下的光标跳行、S.W 坐标搜索、Tab 闪跳与边框渲染）。
+- 静态语法检查（`bash -n`、`py_compile`）；
+- 伪终端单元测试（`tests/test_switcher.py`）：覆盖数据生成、Tabby 安全兼容、2D 边框网格与跳行矩阵；
+- **真实终端客户端端到端测试（`tests/test_real_tmux_e2e.py`）**：在隔离的 tmux server 启动真实的终端 Client 实例，通过键盘模拟触发真实的 `prefix + w` 弹窗、输入字符并由 tmux 切换 client，回读校验状态变更。
 
-本地运行测试：
+本地运行全部测试：
 ```bash
 python3 tests/test_switcher.py
+python3 tests/test_real_tmux_e2e.py
 ```
 
 ## License

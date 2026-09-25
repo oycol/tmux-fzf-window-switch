@@ -39,6 +39,7 @@ jobs:
       - name: Run automated test suite
         run: |
           python3 tests/test_switcher.py
+          python3 tests/test_real_tmux_e2e.py
 
       - name: Teardown tmux server
         if: always()
