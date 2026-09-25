@@ -74,6 +74,17 @@ class TestLocateAndSearch(unittest.TestCase):
         self.assertEqual(self.state.mode, Mode.BROWSE)
         self.assertEqual(self.state.query, "jkq")
 
+    def test_search_by_coordinate_2_1(self):
+        # In SEARCH mode, searching '2.1' should match the window with coordinate 2.1
+        self.state.handle_key("/")
+        self.state.query = ""
+        for ch in "2.1":
+            self.state.handle_key(ch)
+        matched = self.state.get_eligible_windows()
+        # In setUp: s2 (alias 2) has w3 (2.0), w4 (2.1), w5 (2.2), w6 (2.20)
+        # Only w4 should match 2.1
+        self.assertTrue(any(w.window_id == "@4" for w in matched))
+
     def test_format_path_home_boundary(self):
         from scripts.switcher.render import format_path
         home = os.path.expanduser("~")

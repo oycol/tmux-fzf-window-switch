@@ -141,22 +141,25 @@ class AppState:
         elif key == "/":
             self.mode = Mode.SEARCH
             self.status_msg = ""
-        elif key in ("1", "2", "3", "4", "5", "6", "7", "8", "9", ":"):
+        if key in ("1", "2", "3", "4", "5", "6", "7", "8", "9", ":"):
             self.mode = Mode.LOCATE
             self.locate_buf = key
             self.status_msg = ""
+            # Auto-preview target immediately upon typing coordinate
+            matched = self.resolve_locate_target()
+            if matched:
+                self.selected_window_id = matched.window_id
         elif key in ("\t", "KEY_BTAB"):
-            # Tab in BROWSE: snap to pinned last window if valid
+            # Tab in BROWSE: toggle between pinned last window and source (current) window
             if self.pinned_last_window_id:
-                found = False
-                for w in self.get_eligible_windows():
-                    if w.window_id == self.pinned_last_window_id:
-                        self.selected_window_id = w.window_id
-                        self.delete_armed_window_id = self.selected_window_id
-                        found = True
-                        break
-                if not found:
-                    self.status_msg = "Pinned last window no longer available"
+                if self.selected_window_id == self.pinned_last_window_id:
+                    # Currently on last window -> toggle back to source (current) window
+                    self.selected_window_id = self.source_window_id
+                    self.delete_armed_window_id = None
+                else:
+                    # Currently on source or another window -> toggle to last window
+                    self.selected_window_id = self.pinned_last_window_id
+                    self.delete_armed_window_id = self.selected_window_id
         elif key == "?":
             self.show_help = not self.show_help
 
@@ -251,3 +254,8 @@ class AppState:
             self.mode = Mode.BROWSE
         elif len(key) == 1 and key.isprintable():
             self.locate_buf += key
+
+        # Dynamically focus target if locate_buf resolves to a valid window
+        matched = self.resolve_locate_target()
+        if matched:
+            self.selected_window_id = matched.window_id

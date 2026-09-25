@@ -45,7 +45,8 @@ class SwitcherApp:
         self.init_state()
 
         while True:
-            stdscr.clear()
+            # Avoid stdscr.clear() to eliminate full-terminal flicker; redraw lines cleanly
+            stdscr.erase()
             h, w = stdscr.getmaxyx()
             if h < 8 or w < 20:
                 stdscr.addstr(0, 0, "Terminal too small")
@@ -68,16 +69,35 @@ class SwitcherApp:
                 break
 
     def _render_frame(self, stdscr, layout: LayoutInfo):
-        # 1. Outer Border
+        # 1. Outer Border with rounded corners (╭, ╮, ╰, ╯)
+        w = layout.total_w
+        h = layout.total_h
+        border_attr = curses.color_pair(1)
+
         try:
-            stdscr.border()
+            # Top line: ╭ + ─*(w-2) + ╮
+            stdscr.addstr(0, 0, "╭" + "─" * (w - 2) + "╮", border_attr)
+            # Side lines: │
+            for y in range(1, h - 1):
+                stdscr.addstr(y, 0, "│", border_attr)
+                stdscr.addstr(y, w - 1, "│", border_attr)
+            # Bottom line: ╰ + ─*(w-2)
+            stdscr.addstr(h - 1, 0, "╰" + "─" * (w - 2), border_attr)
+            try:
+                # Bottom right corner (last cell of screen may raise curses error if auto-advance)
+                stdscr.addstr(h - 1, w - 1, "╯", border_attr)
+            except curses.error:
+                pass
         except Exception:
-            pass
+            try:
+                stdscr.border()
+            except Exception:
+                pass
 
         # Title at top border
         title = " tmux window switcher "
         try:
-            stdscr.addstr(0, max(2, (layout.total_w - len(title)) // 2), title, curses.A_BOLD | curses.color_pair(2))
+            stdscr.addstr(0, max(2, (w - len(title)) // 2), title, curses.A_BOLD | curses.color_pair(2))
         except Exception:
             pass
 
@@ -109,22 +129,36 @@ class SwitcherApp:
         # 3. Body: Window List (left)
         self._render_list(stdscr, layout)
 
-        # Divider between list and preview
-        if layout.show_preview and layout.divider_x > 0:
-            for y in range(layout.divider_top_y, layout.divider_bottom_y + 1):
-                try:
-                    stdscr.addch(y, layout.divider_x, '│', curses.color_pair(1))
-                except Exception:
-                    pass
-
         # 4. Body: Preview (right)
         if layout.show_preview and layout.preview_w > 0:
             self._render_preview(stdscr, layout)
+
+        # Divider between list and preview (with neat T-junctions ┬ and ┴)
+        if layout.show_preview and layout.divider_x > 0:
+            # Top junction with input separator line (y=2)
+            try:
+                stdscr.addstr(2, layout.divider_x, "┬", curses.color_pair(1))
+            except Exception:
+                pass
+            # Vertical line through body
+            for y in range(layout.divider_top_y, layout.divider_bottom_y + 1):
+                try:
+                    stdscr.addstr(y, layout.divider_x, "│", curses.color_pair(1))
+                except Exception:
+                    pass
+            # Bottom junction with footer separator line (y = layout.help_y - 1)
+            try:
+                stdscr.addstr(layout.help_y - 1, layout.divider_x, "┴", curses.color_pair(1))
+            except Exception:
+                pass
 
         # Separator above help line (y = layout.help_y - 1)
         sep_y = layout.help_y - 1
         try:
             stdscr.addstr(sep_y, 1, "─" * layout.inner_w, curses.color_pair(1))
+            # Restore ┴ if separator line overwrote it
+            if layout.show_preview and layout.divider_x > 0:
+                stdscr.addstr(sep_y, layout.divider_x, "┴", curses.color_pair(1))
         except Exception:
             pass
 

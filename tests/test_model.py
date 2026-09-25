@@ -89,5 +89,24 @@ class TestNavigation(unittest.TestCase):
         state.handle_key("K")
         self.assertEqual(state.selected_window.window_id, "@1")
 
+    def test_tab_toggle_between_last_and_current_window(self):
+        from scripts.switcher.state import AppState
+
+        # w0 is source (@0), w2 is last (@2)
+        state = AppState.create(self.groups, source_window_id="@0")
+        self.assertEqual(state.selected_window_id, "@2")
+
+        # Press Tab -> toggles to source window @0
+        state.handle_key("\t")
+        self.assertEqual(state.selected_window_id, "@0")
+
+        # Press Tab again -> toggles back to last window @2
+        state.handle_key("\t")
+        self.assertEqual(state.selected_window_id, "@2")
+
+        # Press Tab again -> toggles back to source window @0
+        state.handle_key("\t")
+        self.assertEqual(state.selected_window_id, "@0")
+
 if __name__ == '__main__':
     unittest.main()

@@ -31,6 +31,6 @@ else
     [[ "$popup_h" -lt 14 ]] && popup_h=14
 fi
 
-# Run python switcher inside display-popup
-cmd="PYTHONPATH=\"$SCRIPT_DIR/..\" python3 -m scripts.switcher.app --socket '$SOCKET_PATH' --client '$CLIENT_TARGET'"
+# Run python switcher inside display-popup with ESCDELAY=25 for instant ESC response
+cmd="PYTHONPATH=\"$SCRIPT_DIR/..\" ESCDELAY=25 python3 -m scripts.switcher.app --socket '$SOCKET_PATH' --client '$CLIENT_TARGET'"
 tmux display-popup -b none -w "$popup_w" -h "$popup_h" -E "$cmd"

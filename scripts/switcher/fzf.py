@@ -24,7 +24,7 @@ def fzf_filter_windows(groups: List[SessionGroup], query: str, source_window_id:
         for w in g.windows:
             if w.window_id == source_window_id:
                 continue
-            meta = f"{w.session_name} {w.session_alias} {w.window_index} {w.window_name} {w.active_pane_command} {w.active_pane_path}"
+            meta = f"{w.session_name} {w.session_alias} {w.window_index} {w.session_alias}.{w.window_index} {w.window_name} {w.active_pane_command} {w.active_pane_path}"
             lines.append(f"{w.window_id}\t{meta}")
 
     if not lines:
