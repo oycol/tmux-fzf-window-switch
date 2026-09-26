@@ -114,7 +114,8 @@ def compute_layout(width: int, height: int, preview_pct: int = 50, show_preview:
 
     # Determine preview visibility based on width
     # Small terminal degrades optional cols -> single pane -> no preview
-    actual_show_preview = show_preview and (total_w >= 60)
+    # Reserve enough room for coordinate, window, path and pane count.
+    actual_show_preview = show_preview and (total_w >= 100)
 
     list_w = inner_w
     preview_w = 0
@@ -124,8 +125,8 @@ def compute_layout(width: int, height: int, preview_pct: int = 50, show_preview:
     if actual_show_preview:
         calc_preview_w = int(inner_w * (preview_pct / 100.0))
         calc_list_w = inner_w - calc_preview_w - 1
-        if calc_list_w < 20:
-            calc_list_w = 20
+        if calc_list_w < 46:
+            calc_list_w = 46
             calc_preview_w = max(0, inner_w - calc_list_w - 1)
         if calc_preview_w < 15:
             actual_show_preview = False

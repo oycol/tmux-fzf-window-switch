@@ -15,6 +15,36 @@ class SwitcherApp:
         self.adapter = adapter
         self.state: Optional[AppState] = None
         self.pane_cache: Dict[str, List[str]] = {}
+        self.help_offset = 0
+        self.current_layout: Optional[LayoutInfo] = None
+
+    def _draw(self, stdscr, y: int, x: int, text: str, width: int, attr=0):
+        """Keep every UI string within its terminal-cell rectangle."""
+        if width <= 0:
+            return
+        clean = sanitize_text_line(text, max(width * 4, width))
+        clipped = truncate_cell(clean, width)
+        try:
+            stdscr.addstr(y, x, clipped, attr)
+        except curses.error:
+            pass
+
+    @staticmethod
+    def _end(text: str, width: int) -> str:
+        """Preserve the newest search/location input on a narrow terminal."""
+        if str_cell_width(text) <= width:
+            return text
+        if width <= 1:
+            return truncate_cell(text, width)
+        chars = []
+        used = 1
+        for ch in reversed(text):
+            cw = str_cell_width(ch)
+            if used + cw > width:
+                break
+            chars.append(ch)
+            used += cw
+        return "…" + "".join(reversed(chars))
 
     def init_state(self):
         groups, src_wid = self.adapter.get_snapshot()
@@ -26,21 +56,16 @@ class SwitcherApp:
         stdscr.keypad(True)
         curses.use_default_colors()
 
-        # Initialize color pairs
-        # 1: Normal border/dim
-        # 2: Highlight/active
-        # 3: Selected row
-        # 4: Current window (dimmed)
-        # 5: Help/footer
-        # 6: Header / Mode label
+        # 1: frame neutral; 2: accent / group; 3: selection; 4: source;
+        # 5: footer / hint; 6: command / preview heading.
         try:
-            curses.init_pair(1, curses.COLOR_BLUE, -1)
+            curses.init_pair(1, 8 if curses.COLORS >= 16 else curses.COLOR_BLUE, -1)
             curses.init_pair(2, curses.COLOR_CYAN, -1)
             curses.init_pair(3, curses.COLOR_BLACK, curses.COLOR_CYAN)
             curses.init_pair(4, curses.COLOR_WHITE, -1)
-            curses.init_pair(5, curses.COLOR_MAGENTA, -1)
-            curses.init_pair(6, curses.COLOR_YELLOW, -1)
-        except Exception:
+            curses.init_pair(5, curses.COLOR_WHITE, -1)
+            curses.init_pair(6, curses.COLOR_CYAN, -1)
+        except curses.error:
             pass
 
         self.init_state()
@@ -58,6 +83,7 @@ class SwitcherApp:
                 continue
 
             layout = compute_layout(w, h, preview_pct=60, show_preview=self.state.show_preview)
+            self.current_layout = layout
             self._render_frame(stdscr, layout)
             stdscr.refresh()
 
@@ -96,30 +122,35 @@ class SwitcherApp:
                 pass
 
         # Title at top border
-        title = " tmux window switcher "
+        title = " 窗口切换 "
         try:
-            stdscr.addstr(0, max(2, (w - len(title)) // 2), title, curses.A_BOLD | curses.color_pair(2))
+            stdscr.addstr(0, 2, title, curses.A_BOLD | curses.color_pair(2))
         except Exception:
             pass
 
-        # 2. Top Mode and Input line (y=1)
-        mode_str = f"[{self.state.mode.name}] "
+        # 2. Top command line: mode, input and result count.
+        mode_label = {Mode.BROWSE: "浏览", Mode.SEARCH: "搜索", Mode.LOCATE: "定位"}[self.state.mode]
+        label = f" {mode_label} │ "
         if self.state.mode == Mode.SEARCH:
-            input_content = f"🔍 / {self.state.query}"
+            content = "/ " + self.state.query
         elif self.state.mode == Mode.LOCATE:
-            input_content = f"🎯 : {self.state.locate_buf}"
+            content = self.state.locate_buf
+        elif self.state.query:
+            content = f"过滤 / {self.state.query}"
+        elif layout.input_w < 52:
+            content = "/ 搜索 · : 定位"
         else:
-            if self.state.query:
-                input_content = f"Filter: {self.state.query}  (Ctrl-u to clear)"
-            else:
-                input_content = "Type '/' to search, '1-9' or ':' to locate, '?' for help"
-
-        line1 = f" {mode_str}{input_content}"
-        line1_truncated = truncate_cell(line1, layout.input_w)
-        try:
-            stdscr.addstr(layout.input_y, layout.input_x, line1_truncated, curses.A_BOLD)
-        except Exception:
-            pass
+            content = "选择窗口 · / 搜索 · 数字或 : 精确定位"
+        count = len(self.state.get_eligible_windows())
+        badge = f" {count} 项 "
+        badge_w = str_cell_width(badge)
+        label_w = str_cell_width(label)
+        avail = max(0, layout.input_w - label_w - badge_w)
+        top = label + self._end(content, avail)
+        self._draw(stdscr, layout.input_y, layout.input_x, top, layout.input_w - badge_w,
+                   curses.A_BOLD | curses.color_pair(6))
+        self._draw(stdscr, layout.input_y, layout.input_x + layout.input_w - badge_w,
+                   badge, badge_w, curses.color_pair(2))
 
         # Horizontal separator below input (y=2)
         try:
@@ -163,26 +194,40 @@ class SwitcherApp:
         except Exception:
             pass
 
-        # 5. Full-width single help line OUTSIDE both body boxes (y = layout.help_y)
-        # Spec clause 17:
-        # "full-width final single help line OUTSIDE both body boxes; divider ends ABOVE help.
-        # Footer text adaptive abbreviated for narrow screens; ? complete help. Entire help line never clipped mid-word"
+        # One line outside both panels: state feedback wins over key hints.
         if self.state.show_help:
-            help_text = " 帮助视图  ·  ? / Esc 返回 "
+            help_text = " 帮助  ·  j/k 滚动  ·  ? / Esc 返回"
         elif self.state.status_msg:
-            help_text = f" ! {self.state.status_msg} "
+            help_text = f" ! {self.state.status_msg}"
+        elif self.state.mode == Mode.SEARCH:
+            help_text = " 输入关键词  ·  ↑↓ 选择  ·  Enter 切换  ·  Backspace 修改  ·  Esc 返回"
+        elif self.state.mode == Mode.LOCATE:
+            help_text = " 精确定位  ·  2.2 / :bios:2  ·  Enter 切换  ·  Esc 取消"
+        elif layout.help_w >= 96:
+            help_text = " Enter 切换  ·  j/k 窗口  ·  J/K 会话  ·  / 搜索  ·  Ctrl-x 删除  ·  ? 帮助  ·  q 退出"
+        elif layout.help_w >= 52:
+            help_text = " Enter 切换  ·  j/k 窗口  ·  J/K 会话  ·  / 搜索  ·  ? 帮助"
         else:
-            if layout.help_w >= 100:
-                help_text = " Enter 切换  J/K 跨会话  j/k 逐窗  / 搜索  ^x 直接删除  ? 帮助  q 退出 "
-            elif layout.help_w >= 60:
-                help_text = " Enter切换 J/K跨会话 j/k逐窗 /搜索 ^x删除 ?帮助 q退出 "
-            else:
-                help_text = " Enter切换 J/K会话 ?:帮助 q:退出 "
+            help_text = " Enter 切换  ·  ? 帮助  ·  q 退出"
+        options = [help_text]
+        if self.state.show_help:
+            options += [" 帮助  ·  j/k 滚动  ·  Esc 返回", " 帮助  ·  Esc 返回"]
+        elif not self.state.status_msg and self.state.mode == Mode.SEARCH:
+            options += [" 搜索  ·  Backspace 修改  ·  Esc 返回", " 搜索  ·  Esc 返回"]
+        elif not self.state.status_msg and self.state.mode == Mode.LOCATE:
+            options += [" 精确定位  ·  Enter 切换  ·  Esc 取消", " 定位  ·  Esc 取消"]
+        elif self.state.mode == Mode.BROWSE and not self.state.status_msg:
+            options += [" Enter 切换  ·  J/K 会话  ·  / 搜索  ·  ? 帮助",
+                        " Enter 切换  ·  ? 帮助  ·  q 退出"]
+        help_text = next((s for s in options if str_cell_width(s) <= layout.help_w), options[-1])
+        self._draw(stdscr, layout.help_y, layout.help_x, help_text,
+                   layout.help_w, curses.color_pair(5))
 
-        try:
-            stdscr.addstr(layout.help_y, layout.help_x, truncate_cell(help_text, layout.help_w), curses.color_pair(5))
-        except Exception:
-            pass
+        # Horizontal separators meet the outer border; the preview divider
+        # joins them above the independent full-width footer.
+        for y in (2, layout.help_y - 1):
+            self._draw(stdscr, y, 0, "├", 1, border_attr)
+            self._draw(stdscr, y, w - 1, "┤", 1, border_attr)
 
         if self.state.show_help:
             self._render_help(stdscr, layout)
@@ -203,7 +248,25 @@ class SwitcherApp:
             "● 源窗口   ↩ 返回窗口   Tab 未绑定",
             "q / Esc         退出浏览",
         ]
-        for i, text in enumerate(lines[:layout.body_bottom_y - layout.body_top_y + 1]):
+        visible = layout.body_bottom_y - layout.body_top_y + 1
+        if layout.inner_w < 52:
+            lines = [
+                "操作帮助  ·  j/k 滚动",
+                "j/k 或 ↑↓  逐个窗口循环",
+                "J/K  跨会话到活动窗口",
+                "Enter  切换到选中窗口",
+                "/  搜索 · Esc 保留过滤",
+                "数字 / :  精确定位 2.2",
+                "Ctrl-x  直接删除非源窗口",
+                "Ctrl-p  显隐预览",
+                "v · [ ]  预览详情 / Pane",
+                "Ctrl-r  刷新快照",
+                "Ctrl-u  清除过滤",
+                "● 源窗口  ↩ 返回目标",
+                "Tab 未绑定 · q/Esc 退出",
+            ]
+        start = min(self.help_offset, max(0, len(lines) - visible))
+        for i, text in enumerate(lines[start:start + visible]):
             y = layout.body_top_y + i
             clipped = truncate_cell(text, layout.inner_w)
             stdscr.addstr(y, layout.inner_x,
@@ -217,6 +280,21 @@ class SwitcherApp:
             return
 
         eligible = self.state.get_eligible_windows()
+        if not eligible:
+            available_width = max(0, layout.list_w - 2)
+            if self.state.query and self.state.mode == Mode.SEARCH:
+                messages = ("没有匹配窗口 · Backspace 修改 · Esc 返回",
+                            "没有匹配窗口 · Backspace 修改", "没有匹配窗口")
+            elif self.state.query:
+                messages = ("没有匹配窗口 · / 修改 · Ctrl-u 清除过滤",
+                            "没有匹配窗口 · Ctrl-u 清除过滤", "没有匹配窗口")
+            else:
+                messages = ("没有其他可切换窗口 · Esc 退出", "没有其他可切换窗口")
+            message = next((text for text in messages if str_cell_width(text) <= available_width),
+                           messages[-1])
+            self._draw(stdscr, layout.body_top_y + min(1, max_rows - 1), layout.list_x + 1,
+                       message, available_width, curses.color_pair(5))
+            return
         selected_wid = self.state.selected_window_id
 
         # Build display lines
@@ -228,21 +306,24 @@ class SwitcherApp:
             if not matching_in_g:
                 continue
 
-            header_str = f"[{g.session_alias}] {g.session_name}  ·  {len(g.windows)} windows"
+            header_str = f"  [{g.session_alias}] {sanitize_text_line(g.session_name, layout.list_w)}  ·  {len(g.windows)} 窗口"
             display_lines.append(('HEADER', header_str, False, False, None))
 
             for w in g.windows:
                 if w not in eligible and not w.is_current:
                     continue
+                focus_mark = "›" if w.window_id == selected_wid else " "
                 marker = "●" if w.is_current else ("↩" if w.window_id == self.state.return_window_id else " ")
                 coord = f"{w.session_alias}.{w.window_index}"
                 pane_label = f"{len(w.panes)}P"
                 name_budget = max(8, min(18, layout.list_w // 4))
                 name = truncate_cell(sanitize_text_line(w.window_name, name_budget), name_budget)
-                fixed = f" {marker} {coord:<6} {name:<{name_budget}} "
+                name += " " * max(0, name_budget - str_cell_width(name))
+                fixed = f"{focus_mark}{marker} {coord:<6} {name} "
                 path_budget = max(0, layout.list_w - str_cell_width(fixed) - str_cell_width(pane_label) - 2)
                 path_text = format_path(sanitize_text_line(w.active_pane_path, 300), path_budget)
-                w_str = f"{fixed}{path_text:<{path_budget}} {pane_label}"
+                path_text += " " * max(0, path_budget - str_cell_width(path_text))
+                w_str = f"{fixed}{path_text} {pane_label}"
                 is_sel = (w.window_id == selected_wid)
                 display_lines.append(('WINDOW', w_str, is_sel, w.is_current, w))
 
@@ -294,14 +375,28 @@ class SwitcherApp:
             if p.pane_id not in self.pane_cache:
                 self.pane_cache[p.pane_id] = self.adapter.capture_pane(p.pane_id, num_lines=h + 10)
 
-        # Header of preview: window info card
-        header = f"[{w.session_name}:{w.window_index} - {w.window_name}] ({len(w.panes)} panes)"
-        try:
-            stdscr.addstr(layout.body_top_y, layout.preview_x, truncate_cell(header, cw), curses.A_BOLD | curses.color_pair(6))
-        except Exception:
-            pass
+        # Preview header is a concise target summary; detail mode names the pane.
+        if self.state.preview_detail_mode and w.panes:
+            pane = w.panes[self.state.selected_pane_idx % len(w.panes)]
+            header = f" {w.session_alias}.{w.window_index}  {w.window_name}  /  Pane {pane.pane_index} · {pane.pane_current_command}"
+        else:
+            header = f" {w.session_alias}.{w.window_index}  {w.window_name}  /  {len(w.panes)} Pane"
+        self._draw(stdscr, layout.body_top_y, layout.preview_x, header, cw,
+                   curses.A_BOLD | curses.color_pair(6))
 
         canvas_h = max(1, h - 1)
+        # Do not leave an empty preview looking like a broken panel.
+        preview_panes = ([w.panes[self.state.selected_pane_idx % len(w.panes)]]
+                         if self.state.preview_detail_mode and w.panes else w.panes)
+        if preview_panes and not any(any(line.strip() for line in self.pane_cache.get(p.pane_id, []))
+                                     for p in preview_panes):
+            if h >= 3:
+                self._draw(stdscr, layout.body_top_y + min(2, h - 1), layout.preview_x + 2,
+                           "当前没有可显示的终端输出", max(0, cw - 4), curses.color_pair(4))
+            if h >= 5:
+                self._draw(stdscr, layout.body_top_y + 4, layout.preview_x + 2,
+                           "Enter 切换到这个窗口", max(0, cw - 4), curses.color_pair(5))
+            return
         # Check if single pane detail mode is requested
         if self.state.preview_detail_mode and w.panes:
             # Render only selected pane
@@ -326,6 +421,7 @@ class SwitcherApp:
         if ch == 27: # Escape
             if self.state.show_help:
                 self.state.show_help = False
+                self.help_offset = 0
             elif self.state.mode in (Mode.SEARCH, Mode.LOCATE):
                 self.state.handle_key("ESC")
             else:
@@ -335,6 +431,11 @@ class SwitcherApp:
         if self.state.show_help:
             if ch == ord('?'):
                 self.state.show_help = False
+                self.help_offset = 0
+            elif ch in (ord('j'), curses.KEY_DOWN):
+                self.help_offset += 1
+            elif ch in (ord('k'), curses.KEY_UP):
+                self.help_offset = max(0, self.help_offset - 1)
             return False
 
         if ch == ord('q') and self.state.mode == Mode.BROWSE:
@@ -360,6 +461,13 @@ class SwitcherApp:
                 # The client already switched: report honestly, do not claim history was saved.
                 self.state.status_msg = f"Switched, but return target was not saved: {exc}"
             return True
+
+        # Detail controls only operate when the preview is actually visible.
+        if (ch in (ord('v'), ord('['), ord(']')) and self.state.mode == Mode.BROWSE
+                and self.current_layout is not None and not self.current_layout.show_preview):
+            self.state.status_msg = ("预览已关闭；Ctrl-p 可开启" if not self.state.show_preview
+                                     else "预览因窗口宽度不足而隐藏")
+            return False
 
         # Detail mode toggle: 'v'
         if ch == ord('v') and self.state.mode == Mode.BROWSE:
