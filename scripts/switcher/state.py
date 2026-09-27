@@ -45,6 +45,46 @@ class AppState:
         state.delete_blocked = False
         return state
 
+    def dump_state(self) -> dict:
+        """Serialize interactive state for smooth restoration across resize re-launches."""
+        return {
+            "mode": self.mode.name,
+            "query": self.query,
+            "locate_buf": self.locate_buf,
+            "selected_window_id": self.selected_window_id,
+            "show_preview": self.show_preview,
+            "preview_detail_mode": self.preview_detail_mode,
+            "selected_pane_idx": self.selected_pane_idx,
+            "show_help": self.show_help,
+        }
+
+    def restore_state(self, data: dict):
+        """Restore previous interactive state to prevent disruption on window resize."""
+        if not data:
+            return
+        if "mode" in data and hasattr(Mode, data["mode"]):
+            self.mode = Mode[data["mode"]]
+        if "query" in data:
+            self.query = data["query"]
+        if "locate_buf" in data:
+            self.locate_buf = data["locate_buf"]
+        if "show_preview" in data:
+            self.show_preview = bool(data["show_preview"])
+        if "preview_detail_mode" in data:
+            self.preview_detail_mode = bool(data["preview_detail_mode"])
+        if "selected_pane_idx" in data:
+            self.selected_pane_idx = int(data["selected_pane_idx"])
+        if "show_help" in data:
+            self.show_help = bool(data["show_help"])
+
+        # Re-check selection
+        saved_sel = data.get("selected_window_id")
+        candidates = self.get_eligible_windows()
+        if saved_sel and any(w.window_id == saved_sel for w in candidates):
+            self.selected_window_id = saved_sel
+        else:
+            self.reconcile_selection()
+
     def replace_groups(self, groups: List[SessionGroup]):
         self.groups = groups
         for g in groups:

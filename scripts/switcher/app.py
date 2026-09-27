@@ -2,6 +2,9 @@
 import curses
 import os
 import sys
+import json
+import time
+import hashlib
 from typing import Optional, List, Dict, Tuple
 from scripts.switcher.model import LayoutInfo, Window, SessionGroup
 from scripts.switcher.state import AppState, Mode
@@ -11,8 +14,77 @@ from scripts.switcher.tmux import TmuxAdapter
 
 # Exit code signalling the launcher to reopen the popup at the new client size.
 RESIZE_EXIT_CODE = 42
-# How often (ms) to poll client size while idle.
-RESIZE_POLL_MS = 400
+# Fast poll interval (ms) for responsive debounce without noticeable latency.
+RESIZE_POLL_MS = 100
+
+
+def state_file_path(client_target: str) -> str:
+    h = hashlib.sha256((client_target or "default").encode()).hexdigest()[:16]
+    return f"/tmp/.tmux_switch_state_{h}.json"
+
+
+def save_transient_state(client_target: str, data: dict):
+    if not client_target:
+        return
+    path = state_file_path(client_target)
+    try:
+        tmp_path = path + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+        os.replace(tmp_path, path)
+    except Exception:
+        pass
+
+
+def load_transient_state(client_target: str) -> Optional[dict]:
+    if not client_target:
+        return None
+    path = state_file_path(client_target)
+    if not os.path.exists(path):
+        return None
+    try:
+        if time.time() - os.path.getmtime(path) > 5.0:
+            os.remove(path)
+            return None
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        os.remove(path)
+        return data
+    except Exception:
+        return None
+
+
+def compute_frame_box(total_w: int, total_h: int, scale: float) -> Tuple[int, int, int, int]:
+    scale = max(0.1, min(1.0, scale))
+    w = max(10, int(total_w * scale))
+    h = max(4, int(total_h * scale))
+    x = max(0, (total_w - w) // 2)
+    y = max(0, (total_h - h) // 2)
+    return x, y, w, h
+
+
+def play_opening_animation(stdscr, target_w: int, target_h: int):
+    """Play a lightweight, smooth 2-frame scale-out animation on initial open (~40ms)."""
+    if target_w < 40 or target_h < 12:
+        return
+    if os.environ.get("TMUX_SWITCH_NO_ANIM") == "1":
+        return
+
+    border_attr = curses.color_pair(1) if curses.has_colors() else curses.A_NORMAL
+    steps = [0.65, 0.88]
+    for scale in steps:
+        bx, by, bw, bh = compute_frame_box(target_w, target_h, scale)
+        stdscr.erase()
+        try:
+            stdscr.addstr(by, bx, "╭" + "─" * (bw - 2) + "╮", border_attr)
+            for row in range(1, bh - 1):
+                stdscr.addstr(by + row, bx, "│", border_attr)
+                stdscr.addstr(by + row, bx + bw - 1, "│", border_attr)
+            stdscr.addstr(by + bh - 1, bx, "╰" + "─" * (bw - 2) + "╯", border_attr)
+        except curses.error:
+            pass
+        stdscr.refresh()
+        curses.napms(20)
 
 
 def popup_size_for_client(client_w: int, client_h: int) -> Tuple[int, int]:
@@ -43,20 +115,42 @@ class SwitcherApp:
         self.pane_cache: Dict[str, List[str]] = {}
         # Popup size this process was launched with; None disables resize polling.
         self.popup_size: Optional[Tuple[int, int]] = None
+        self.is_resumed: bool = False
+        self.pending_resize_target: Optional[Tuple[int, int]] = None
+        self.has_played_open_anim: bool = False
 
     def _handle_resize(self) -> bool:
-        """True when the client was resized and the popup should be reopened."""
+        """True when the client was resized, stabilized (debounced), and should reopen."""
         if self.popup_size is None:
             return False
         cw, ch = self.adapter.get_client_size()
         if cw <= 0 or ch <= 0:
             return False
-        return popup_size_for_client(cw, ch) != self.popup_size
+        new_target = popup_size_for_client(cw, ch)
+        if new_target == self.popup_size:
+            self.pending_resize_target = None
+            return False
+
+        # Debounce: wait for client dimension to stabilize across 2 consecutive polls (~100-200ms)
+        if self.pending_resize_target == new_target:
+            # Dimension stabilized: save state to RAM and signal launcher to reopen smoothly
+            if self.state and self.adapter.client_target:
+                save_transient_state(self.adapter.client_target, self.state.dump_state())
+            return True
+        else:
+            self.pending_resize_target = new_target
+            return False
 
     def init_state(self):
         groups, src_wid = self.adapter.get_snapshot()
         return_id = self.adapter.get_return_window_id() if self.adapter.client_target else None
         self.state = AppState.create(groups, source_window_id=src_wid, return_window_id=return_id)
+        # Restore transient state if reopening from a window resize
+        if self.adapter.client_target:
+            saved = load_transient_state(self.adapter.client_target)
+            if saved:
+                self.state.restore_state(saved)
+                self.is_resumed = True
 
     def run(self, stdscr):
         curses.curs_set(0) # Hide cursor
@@ -84,6 +178,12 @@ class SwitcherApp:
             pass
 
         self.init_state()
+
+        # Play smooth open scale animation only on fresh launch, not during resize transitions
+        if not self.is_resumed and not self.has_played_open_anim:
+            init_h, init_w = stdscr.getmaxyx()
+            play_opening_animation(stdscr, init_w, init_h)
+            self.has_played_open_anim = True
 
         while True:
             # Avoid stdscr.clear() to eliminate full-terminal flicker; redraw lines cleanly

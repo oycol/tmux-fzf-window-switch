@@ -26,9 +26,12 @@ class ResizeDetection(unittest.TestCase):
         self.assertTrue(hasattr(TmuxAdapter, "get_client_size"))
 
     def test_resize_mismatch_returns_restart(self):
-        """_handle_resize returns True when client size differs from popup size."""
+        """_handle_resize debounces across 2 consecutive polls before confirming restart."""
         app = SwitcherApp(FakeAdapter((200, 60)))
         app.popup_size = (90, 30)
+        # First poll: registers pending resize target (returns False for debounce)
+        self.assertFalse(app._handle_resize())
+        # Second poll with stable target: confirms and returns True to restart
         self.assertTrue(app._handle_resize())
 
     def test_no_resize_returns_false(self):
