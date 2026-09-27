@@ -2,7 +2,7 @@
 import re
 from typing import List, Dict, Tuple
 from scripts.switcher.model import Pane
-from scripts.switcher.render import wcwidth_char, str_cell_width, truncate_cell
+from scripts.switcher.render import wcwidth_char, str_cell_width, truncate_cell, truncate_cell_middle
 
 ANSI_ESCAPE_RE = re.compile(r'\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
 
@@ -10,13 +10,17 @@ def strip_ansi(s: str) -> str:
     """Remove ANSI SGR and terminal escape codes safely."""
     return ANSI_ESCAPE_RE.sub('', s)
 
-def sanitize_text_line(s: str, max_w: int) -> str:
-    """Strip ANSI escapes and clamp length to max_w terminal display cells."""
+def sanitize_text_line(s: str, max_w: int, keep_tail: bool = False) -> str:
+    """Strip ANSI escapes and scale length to max_w terminal display cells.
+
+    keep_tail=True keeps the end of the line (paths, command output tails)
+    instead of dropping everything past the right edge.
+    """
     clean = strip_ansi(s).replace('\r', '').replace('\n', '').replace('\t', '    ')
     # Filter non-printable control characters
     filtered = "".join(c for c in clean if (c.isprintable() or c == ' ')
                        and c not in ('\ufe0e', '\ufe0f'))
-    return truncate_cell(filtered, max_w)
+    return truncate_cell_middle(filtered, max_w) if keep_tail else truncate_cell(filtered, max_w)
 
 def render_panes_to_canvas(
     panes: List[Pane],
@@ -41,7 +45,7 @@ def render_panes_to_canvas(
         result = []
         for y in range(canvas_h):
             line_str = lines[y] if y < len(lines) else ""
-            sanitized = sanitize_text_line(line_str, canvas_w)
+            sanitized = sanitize_text_line(line_str, canvas_w, keep_tail=True)
             pad = " " * max(0, canvas_w - str_cell_width(sanitized))
             result.append(sanitized + pad)
         return result
@@ -85,7 +89,9 @@ def render_panes_to_canvas(
                 line_idx = (row_idx - 1) if bh > 1 else row_idx
                 content_line = lines[line_idx] if line_idx < len(lines) else ""
             
-            sanitized = sanitize_text_line(content_line, bw)
+            # Sub-panes are narrow: scale wide lines keeping the tail
+            # so paths and command output remain readable.
+            sanitized = sanitize_text_line(content_line, bw, keep_tail=True)
             gx = bx
             for ch in sanitized:
                 w = wcwidth_char(ch)

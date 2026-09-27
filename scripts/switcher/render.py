@@ -33,6 +33,41 @@ def truncate_cell(s: str, max_w: int) -> str:
         cur_w += w
     return "".join(res)
 
+def truncate_cell_middle(s: str, max_w: int) -> str:
+    """Scale text down to max_w cells, keeping the head and the tail.
+
+    Split the ellipsis budget in half so the end of the line survives:
+    paths and command output tails matter as much as the prefix.
+    """
+    if max_w <= 0:
+        return ""
+    if str_cell_width(s) <= max_w:
+        return s
+    if max_w <= 3:
+        return truncate_cell(s, max_w)
+    budget = max_w - 1  # one cell for the ellipsis
+    head_budget = budget // 2
+    tail_budget = budget - head_budget
+    head = truncate_cell(s, head_budget)
+    tail = truncate_cell_middle_tail(s, tail_budget)
+    return head + "…" + tail
+
+
+def truncate_cell_middle_tail(s: str, max_w: int) -> str:
+    """Keep the widest suffix of s that fits max_w terminal cells."""
+    if max_w <= 0:
+        return ""
+    chars = []
+    used = 0
+    for c in reversed(s):
+        w = wcwidth_char(c)
+        if used + w > max_w:
+            break
+        chars.append(c)
+        used += w
+    return "".join(reversed(chars))
+
+
 def format_path(path: str, max_w: int) -> str:
     """Format file path with exact HOME boundary and middle ellipsis if needed."""
     if not path:
