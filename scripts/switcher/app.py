@@ -103,21 +103,26 @@ class SwitcherApp:
             pass
 
         # 2. Top Mode and Input line (y=1)
-        mode_str = f"[{self.state.mode.name}] "
+        mode_label = {Mode.BROWSE: "浏览", Mode.SEARCH: "搜索", Mode.LOCATE: "定位"}[self.state.mode]
+        mode_str = f"[{mode_label}] "
         if self.state.mode == Mode.SEARCH:
-            input_content = f"🔍 / {self.state.query}"
+            input_content = f"/ {self.state.query}"
         elif self.state.mode == Mode.LOCATE:
-            input_content = f"🎯 : {self.state.locate_buf}"
+            input_content = self.state.locate_buf
         else:
             if self.state.query:
-                input_content = f"Filter: {self.state.query}  (Ctrl-u to clear)"
+                input_content = f"过滤: {self.state.query}  (Ctrl-u 清除)"
             else:
-                input_content = "Type '/' to search, '1-9' or ':' to locate, '?' for help"
+                input_content = "/ 搜索 · 数字或 : 定位 · ? 帮助"
 
-        line1 = f" {mode_str}{input_content}"
-        line1_truncated = truncate_cell(line1, layout.input_w)
+        count = len(self.state.get_eligible_windows())
+        badge = f"{count} 项"
+        avail_w = max(0, layout.input_w - str_cell_width(badge) - 1)
+        left_str = truncate_cell(f" {mode_str}{input_content}", avail_w)
+        pad = " " * max(0, layout.input_w - str_cell_width(left_str) - str_cell_width(badge))
+        line1 = f"{left_str}{pad}{badge}"
         try:
-            stdscr.addstr(layout.input_y, layout.input_x, line1_truncated, curses.A_BOLD)
+            stdscr.addstr(layout.input_y, layout.input_x, line1, curses.A_BOLD)
         except Exception:
             pass
 
@@ -171,6 +176,16 @@ class SwitcherApp:
             help_text = " 帮助视图  ·  ? / Esc 返回 "
         elif self.state.status_msg:
             help_text = f" ! {self.state.status_msg} "
+        elif self.state.mode == Mode.SEARCH:
+            if layout.help_w >= 80:
+                help_text = " [Enter] 确认切换  [↑/↓] 选择结果  [Backspace] 修改  [Esc] 返回浏览 "
+            else:
+                help_text = " Enter:切换 ↑/↓:选择 Backspace:修改 Esc:返回 "
+        elif self.state.mode == Mode.LOCATE:
+            if layout.help_w >= 80:
+                help_text = " [Enter] 确认跳转  [2.2/:bios:2] 精确定位  [Backspace] 修改  [Esc] 取消定位 "
+            else:
+                help_text = " Enter:跳转 2.2/:name:idx 定位 Esc:取消 "
         else:
             if layout.help_w >= 100:
                 help_text = " Enter 切换  J/K 跨会话  j/k 逐窗  / 搜索  ^x 直接删除  ? 帮助  q 退出 "
@@ -234,16 +249,17 @@ class SwitcherApp:
             for w in g.windows:
                 if w not in eligible and not w.is_current:
                     continue
+                is_sel = (w.window_id == selected_wid)
+                focus_mark = "›" if is_sel else " "
                 marker = "●" if w.is_current else ("↩" if w.window_id == self.state.return_window_id else " ")
                 coord = f"{w.session_alias}.{w.window_index}"
                 pane_label = f"{len(w.panes)}P"
                 name_budget = max(8, min(18, layout.list_w // 4))
                 name = truncate_cell(sanitize_text_line(w.window_name, name_budget), name_budget)
-                fixed = f" {marker} {coord:<6} {name:<{name_budget}} "
+                fixed = f"{focus_mark}{marker} {coord:<6} {name:<{name_budget}} "
                 path_budget = max(0, layout.list_w - str_cell_width(fixed) - str_cell_width(pane_label) - 2)
                 path_text = format_path(sanitize_text_line(w.active_pane_path, 300), path_budget)
                 w_str = f"{fixed}{path_text:<{path_budget}} {pane_label}"
-                is_sel = (w.window_id == selected_wid)
                 display_lines.append(('WINDOW', w_str, is_sel, w.is_current, w))
 
         # Viewport scrolling: keep selected line in view
