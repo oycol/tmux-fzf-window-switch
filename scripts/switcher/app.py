@@ -103,17 +103,16 @@ class SwitcherApp:
             pass
 
         # 2. Top Mode and Input line (y=1)
-        mode_label = {Mode.BROWSE: "浏览", Mode.SEARCH: "搜索", Mode.LOCATE: "定位"}[self.state.mode]
-        mode_str = f"[{mode_label}] "
+        mode_str = f"[{self.state.mode.name}] "
         if self.state.mode == Mode.SEARCH:
-            input_content = f"/ {self.state.query}"
+            input_content = f"🔍 / {self.state.query}"
         elif self.state.mode == Mode.LOCATE:
-            input_content = self.state.locate_buf
+            input_content = f"🎯 : {self.state.locate_buf}"
         else:
             if self.state.query:
-                input_content = f"过滤: {self.state.query}  (Ctrl-u 清除)"
+                input_content = f"Filter: {self.state.query}  (Ctrl-u to clear)"
             else:
-                input_content = "/ 搜索 · 数字或 : 精确定位 · ? 帮助"
+                input_content = "Type '/' to search, '1-9' or ':' to locate, '?' for help"
 
         line1 = f" {mode_str}{input_content}"
         line1_truncated = truncate_cell(line1, layout.input_w)
@@ -229,7 +228,7 @@ class SwitcherApp:
             if not matching_in_g:
                 continue
 
-            header_str = f"[{g.session_alias}] {g.session_name}  ·  {len(g.windows)} 窗口"
+            header_str = f"[{g.session_alias}] {g.session_name}  ·  {len(g.windows)} windows"
             display_lines.append(('HEADER', header_str, False, False, None))
 
             for w in g.windows:
@@ -348,18 +347,18 @@ class SwitcherApp:
                 target = self.state.selected_window if self.state.selected_window_id in {
                     w.window_id for w in self.state.get_eligible_windows()} else None
             if not target or target.window_id == self.state.source_window_id:
-                self.state.status_msg = "没有可切换的目标窗口"
+                self.state.status_msg = "No switchable target selected"
                 return False
             ok, err = self.adapter.switch_client(target.window_id)
             if not ok:
-                self.state.status_msg = f"切换失败：{err}"
+                self.state.status_msg = f"Switch failed: {err}"
                 return False
             try:
                 if self.adapter.client_target:
                     self.adapter.set_return_window_id(self.state.source_window_id)
             except RuntimeError as exc:
                 # The client already switched: report honestly, do not claim history was saved.
-                self.state.status_msg = f"已切换，但返回目标未保存：{exc}"
+                self.state.status_msg = f"Switched, but return target was not saved: {exc}"
             return True
 
         # Detail mode toggle: 'v'
@@ -393,16 +392,16 @@ class SwitcherApp:
                         try:
                             fresh, src = self.adapter.get_snapshot()
                             if src != self.state.source_window_id:
-                                self.state.status_msg = "源窗口已变化，请关闭后重新打开"
+                                self.state.status_msg = "Source changed; close and reopen"
                             else:
                                 self.state.replace_groups(fresh)
                                 self.pane_cache.clear()
                         except RuntimeError as exc:
-                            self.state.status_msg = f"已删除，但刷新列表失败：{exc}"
+                            self.state.status_msg = f"Deleted; refresh failed: {exc}"
                     else:
-                        self.state.status_msg = f"删除失败：{err}"
+                        self.state.status_msg = f"Kill error: {err}"
                 else:
-                    self.state.status_msg = "删除已禁用，请先移动到其他窗口"
+                    self.state.status_msg = "Delete disabled. Move selection first."
             return False
 
         if ch == 16 and self.state.mode == Mode.BROWSE: # Ctrl-p
@@ -413,12 +412,12 @@ class SwitcherApp:
             try:
                 fresh, src = self.adapter.get_snapshot()
                 if src != self.state.source_window_id:
-                    self.state.status_msg = "源窗口已变化，请关闭后重新打开"
+                    self.state.status_msg = "Source changed; close and reopen"
                 else:
                     self.state.replace_groups(fresh)
                     self.pane_cache.clear()
             except RuntimeError as exc:
-                self.state.status_msg = f"刷新失败：{exc}"
+                self.state.status_msg = f"Refresh failed: {exc}"
             return False
 
         if ch == 21 and self.state.mode == Mode.BROWSE: # Ctrl-u
