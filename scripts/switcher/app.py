@@ -2,7 +2,6 @@
 import curses
 import os
 import sys
-import argparse
 from typing import Optional, List, Dict, Tuple
 from scripts.switcher.model import LayoutInfo, Window, SessionGroup
 from scripts.switcher.state import AppState, Mode
@@ -511,13 +510,49 @@ class SwitcherApp:
 
         return False
 
+class SwitcherArgs:
+    def __init__(self, socket: Optional[str] = None, client: Optional[str] = None,
+                 popup_size: Optional[Tuple[int, int]] = None):
+        self.socket = socket
+        self.client = client
+        self.popup_size = popup_size
+
+
+def parse_args(argv: List[str]) -> SwitcherArgs:
+    """Lightweight zero-dependency CLI argument parser (replaces heavy argparse)."""
+    socket = None
+    client = None
+    popup_size = None
+
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--socket" and i + 1 < len(argv):
+            socket = argv[i + 1]
+            i += 2
+        elif arg == "--client" and i + 1 < len(argv):
+            client = argv[i + 1]
+            i += 2
+        elif arg == "--popup-size" and i + 1 < len(argv):
+            raw = argv[i + 1]
+            try:
+                pw, ph = raw.lower().split("x", 1)
+                popup_size = (int(pw), int(ph))
+            except ValueError:
+                raise ValueError(f"Invalid --popup-size '{raw}', must look like 120x40")
+            i += 2
+        else:
+            i += 1
+
+    return SwitcherArgs(socket=socket, client=client, popup_size=popup_size)
+
+
 def main():
-    parser = argparse.ArgumentParser(description="tmux window switcher")
-    parser.add_argument("--socket", help="tmux socket path")
-    parser.add_argument("--client", help="tmux client target")
-    parser.add_argument("--popup-size", metavar="WxH",
-                        help="popup dimensions the launcher used; enables resize follow")
-    args = parser.parse_args()
+    try:
+        args = parse_args(sys.argv[1:])
+    except ValueError as exc:
+        sys.stderr.write(f"Error: {exc}\n")
+        sys.exit(2)
 
     sock = args.socket or os.environ.get("TMUX_SOCKET")
     if not sock and "TMUX" in os.environ:
@@ -525,15 +560,13 @@ def main():
 
     client = args.client or os.environ.get("TMUX_SWITCH_CLIENT")
     if not client:
-        parser.error("Explicit --client is required for per-client switch history")
+        sys.stderr.write("Error: Explicit --client is required for per-client switch history\n")
+        sys.exit(2)
+
     adapter = TmuxAdapter(socket_path=sock, client_target=client)
     app = SwitcherApp(adapter)
     if args.popup_size:
-        try:
-            pw, ph = args.popup_size.lower().split("x", 1)
-            app.popup_size = (int(pw), int(ph))
-        except ValueError:
-            parser.error("--popup-size must look like 90x30")
+        app.popup_size = args.popup_size
     curses.wrapper(app.run)
 
 if __name__ == "__main__":

@@ -4,13 +4,15 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOCKET_PATH="${TMUX%%,*}"
-CLIENT_TARGET="$(tmux display-message -p '#{client_name}' 2>/dev/null || true)"
 
-# Compute popup size from the current client dimensions (percent-based).
-compute_popup_size() {
-    local client_w client_h popup_w popup_h
-    client_w=$(tmux display-message -p "#{client_width}" 2>/dev/null || echo 120)
-    client_h=$(tmux display-message -p "#{client_height}" 2>/dev/null || echo 40)
+# Compute popup dimensions and client target in a single tmux IPC call.
+query_client_and_size() {
+    local client_name client_w client_h popup_w popup_h
+    # Query client_name, client_width, client_height together
+    read -r client_name client_w client_h <<< "$(
+        tmux display-message -p "#{client_name} #{client_width} #{client_height}" 2>/dev/null || echo " 120 40"
+    )"
+
     [[ -z "$client_w" || "$client_w" -le 0 ]] && client_w=120
     [[ -z "$client_h" || "$client_h" -le 0 ]] && client_h=40
 
@@ -32,14 +34,16 @@ compute_popup_size() {
         popup_h=$(( client_h - 2 ))
         [[ "$popup_h" -lt 14 ]] && popup_h=14
     fi
-    echo "$popup_w $popup_h"
+
+    echo "$client_name $popup_w $popup_h"
 }
 
 # tmux popups never follow client resize; the in-popup app detects a resized
 # client and exits 42, so we reopen the popup at the new size in a loop.
 while true; do
-    read -r popup_w popup_h <<< "$(compute_popup_size)"
-    cmd="PYTHONPATH=\"$SCRIPT_DIR/..\" ESCDELAY=25 python3 -m scripts.switcher.app --socket '$SOCKET_PATH' --client '$CLIENT_TARGET' --popup-size ${popup_w}x${popup_h}"
+    read -r client_target popup_w popup_h <<< "$(query_client_and_size)"
+    # -S skips scanning global site-packages, shaving ~28ms off Python cold start.
+    cmd="PYTHONPATH=\"$SCRIPT_DIR/..\" ESCDELAY=25 python3 -S -m scripts.switcher.app --socket '$SOCKET_PATH' --client '$client_target' --popup-size ${popup_w}x${popup_h}"
     set +e
     tmux display-popup -b none -w "$popup_w" -h "$popup_h" -E "$cmd"
     rc=$?
