@@ -14,8 +14,7 @@ def sanitize_text_line(s: str, max_w: int) -> str:
     """Strip ANSI escapes and clamp length to max_w terminal display cells."""
     clean = strip_ansi(s).replace('\r', '').replace('\n', '').replace('\t', '    ')
     # Filter non-printable control characters
-    filtered = "".join(c for c in clean if (c.isprintable() or c == ' ')
-                       and c not in ('\ufe0e', '\ufe0f'))
+    filtered = "".join(c for c in clean if c.isprintable() or c == ' ')
     return truncate_cell(filtered, max_w)
 
 def render_panes_to_canvas(

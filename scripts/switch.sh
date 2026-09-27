@@ -22,27 +22,13 @@ else
     popup_w=$(( client_w * 90 / 100 ))
 fi
 
-# Height follows the visible list; reserve 5 rows for frame, input and footer,
-# plus a little breathing room. The help page scrolls on shorter popups.
-window_count=$(tmux list-windows -a -F '#{window_id}' 2>/dev/null | wc -l)
-session_count=$(tmux list-sessions -F '#{session_id}' 2>/dev/null | wc -l)
-content_h=$(( window_count + session_count + 7 ))
 if [[ "$client_h" -ge 60 ]]; then
-    max_h=$(( client_h * 72 / 100 ))
+    popup_h=$(( client_h * 72 / 100 ))
 elif [[ "$client_h" -ge 35 ]]; then
-    max_h=$(( client_h * 78 / 100 ))
+    popup_h=$(( client_h * 78 / 100 ))
 else
-    max_h=$(( client_h - 2 ))
-fi
-[[ "$max_h" -gt "$((client_h - 2))" ]] && max_h=$((client_h - 2))
-[[ "$content_h" -lt 10 ]] && content_h=10
-popup_h=$(( content_h < max_h ? content_h : max_h ))
-if [[ "$popup_h" -lt 8 || "$popup_w" -lt 20 ]]; then
-    # curses needs at least 8x20 cells. Keep the client untouched instead
-    # of launching a popup that cannot show controls or be dismissed.
-    message="窗口切换：终端空间不足（至少 8×20，当前弹窗 ${popup_h}×${popup_w}）"
-    tmux display-message -c "$CLIENT_TARGET" "$message"
-    exit 0
+    popup_h=$(( client_h - 2 ))
+    [[ "$popup_h" -lt 14 ]] && popup_h=14
 fi
 
 # Run python switcher inside display-popup with ESCDELAY=25 for instant ESC response
