@@ -35,6 +35,14 @@ class TestCanvas2D(unittest.TestCase):
         divider_found = any('│' in row or '|' in row for row in canvas)
         self.assertTrue(divider_found)
 
+    def test_variation_selector_does_not_change_terminal_cell_alignment(self):
+        from scripts.switcher.canvas import sanitize_text_line
+        from scripts.switcher.render import str_cell_width
+        # VS16 asks terminals to render the preceding text glyph as a wider emoji.
+        clean = sanitize_text_line('♥\ufe0f 数据', max_w=8)
+        self.assertEqual(clean, '♥ 数据')
+        self.assertEqual(str_cell_width(clean), 6)
+
     def test_strip_ansi_and_cjk_clamp(self):
         from scripts.switcher.canvas import sanitize_text_line
         # ANSI escape sequence must be stripped
