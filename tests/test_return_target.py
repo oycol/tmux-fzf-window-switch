@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import Mock
 from scripts.switcher.model import Window, SessionGroup, Pane
-from scripts.switcher.state import AppState
+from scripts.switcher.state import AppState, BROWSE, SEARCH, LOCATE
 from scripts.switcher.app import SwitcherApp
 
 

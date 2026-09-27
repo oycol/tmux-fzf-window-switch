@@ -1,9 +1,8 @@
 """FZF integration for fuzzy searching full window metadata while preserving session grouping."""
 import subprocess
-from typing import List, Set
 from scripts.switcher.model import Window, SessionGroup
 
-def fzf_filter_windows(groups: List[SessionGroup], query: str, source_window_id: str) -> List[Window]:
+def fzf_filter_windows(groups, query, source_window_id):
     """
     Filter windows across session groups using real fzf --filter,
     but preserving original session and window ordering (not fzf score order).
@@ -47,14 +46,14 @@ def fzf_filter_windows(groups: List[SessionGroup], query: str, source_window_id:
             if query.lower() in line.lower():
                 matched_output += line + "\n"
 
-    matched_ids: Set[str] = set()
+    matched_ids = set()
     for line in matched_output.splitlines():
         if line.strip():
             wid = line.split("\t")[0].strip()
             matched_ids.add(wid)
 
     # Re-order matching windows by session grouping order
-    ordered_matched: List[Window] = []
+    ordered_matched = []
     for g in groups:
         for w in g.windows:
             if w.window_id in matched_ids and w.window_id != source_window_id:

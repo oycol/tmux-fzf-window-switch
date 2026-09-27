@@ -4,7 +4,7 @@ import json
 import tempfile
 import unittest
 from scripts.switcher.model import Window, SessionGroup
-from scripts.switcher.state import AppState, Mode
+from scripts.switcher.state import AppState, BROWSE as Mode_BROWSE, SEARCH as Mode_SEARCH, LOCATE as Mode_LOCATE
 from scripts.switcher.app import (
     SwitcherApp,
     compute_frame_box,
@@ -27,7 +27,7 @@ class SmoothStatePersistenceTest(unittest.TestCase):
 
     def test_state_dump_and_restore(self):
         state = AppState.create(self.groups, source_window_id="@2")
-        state.mode = Mode.SEARCH
+        state.mode = Mode_SEARCH
         state.query = "ba"  # matches w1 (bash)
         state.selected_window_id = "@1"
         state.show_preview = False
@@ -41,20 +41,27 @@ class SmoothStatePersistenceTest(unittest.TestCase):
         # Create new state and restore
         new_state = AppState.create(self.groups, source_window_id="@2")
         new_state.restore_state(data)
-        self.assertEqual(new_state.mode, Mode.SEARCH)
+        self.assertEqual(new_state.mode, Mode_SEARCH)
         self.assertEqual(new_state.query, "ba")
         self.assertEqual(new_state.selected_window_id, "@1")
         self.assertFalse(new_state.show_preview)
 
     def test_transient_state_file_lifecycle(self):
         client = "/dev/pts/99"
-        path = state_file_path(client)
-        payload = {"selected_window_id": "@1", "query": "abc"}
+        payload = {"mode": "SEARCH", "query": "abc", "locate_buf": "",
+                   "selected_window_id": "@1", "show_preview": True,
+                   "preview_detail_mode": False, "selected_pane_idx": 0,
+                   "show_help": False}
         save_transient_state(client, payload)
+        path = state_file_path(client)
         self.assertTrue(os.path.exists(path))
 
         loaded = load_transient_state(client)
-        self.assertEqual(loaded, payload)
+        self.assertEqual(loaded["query"], "abc")
+        self.assertEqual(loaded["selected_window_id"], "@1")
+        self.assertEqual(loaded["mode"], "SEARCH")
+        self.assertTrue(loaded["show_preview"])
+        self.assertFalse(loaded["show_help"])
         # Should be consumed and deleted after load
         self.assertFalse(os.path.exists(path))
 

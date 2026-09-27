@@ -1,6 +1,6 @@
 import unittest
 from scripts.switcher.model import Window, SessionGroup
-from scripts.switcher.state import AppState
+from scripts.switcher.state import AppState, BROWSE, SEARCH, LOCATE
 
 class TestFzfFilter(unittest.TestCase):
     def setUp(self):

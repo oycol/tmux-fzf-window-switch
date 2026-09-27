@@ -1,7 +1,7 @@
 import unittest
 import os
 from scripts.switcher.model import Window, SessionGroup
-from scripts.switcher.state import AppState, Mode
+from scripts.switcher.state import AppState, BROWSE as Mode_BROWSE, SEARCH as Mode_SEARCH, LOCATE as Mode_LOCATE
 
 class TestLocateAndSearch(unittest.TestCase):
     def setUp(self):
@@ -26,7 +26,7 @@ class TestLocateAndSearch(unittest.TestCase):
     def test_exact_coordinate_locate_2_2_vs_12_2_and_2_20(self):
         # In BROWSE, typing '2' enters LOCATE
         self.state.handle_key("2")
-        self.assertEqual(self.state.mode, Mode.LOCATE)
+        self.assertEqual(self.state.mode, Mode_LOCATE)
         self.assertEqual(self.state.locate_buf, "2")
 
         # Type '.' then '2'
@@ -61,7 +61,7 @@ class TestLocateAndSearch(unittest.TestCase):
     def test_search_mode_literal_keys_and_escape(self):
         # Enter search mode with '/'
         self.state.handle_key("/")
-        self.assertEqual(self.state.mode, Mode.SEARCH)
+        self.assertEqual(self.state.mode, Mode_SEARCH)
 
         # Type 'j', 'k', 'q' - in SEARCH mode they MUST be treated as query characters, not navigation/quit
         self.state.handle_key("j")
@@ -71,7 +71,7 @@ class TestLocateAndSearch(unittest.TestCase):
 
         # Esc in SEARCH returns to BROWSE while retaining query filter
         self.state.handle_key("ESC")
-        self.assertEqual(self.state.mode, Mode.BROWSE)
+        self.assertEqual(self.state.mode, Mode_BROWSE)
         self.assertEqual(self.state.query, "jkq")
 
     def test_search_by_coordinate_2_1(self):

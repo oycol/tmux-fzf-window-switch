@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch, MagicMock
 from scripts.switcher.model import Window, SessionGroup
-from scripts.switcher.state import AppState
+from scripts.switcher.state import AppState, BROWSE, SEARCH, LOCATE
 
 class TestTmuxAdapter(unittest.TestCase):
     def setUp(self):

@@ -5,7 +5,7 @@ class TestRenderLayout(unittest.TestCase):
         from unittest.mock import Mock
         from scripts.switcher.app import SwitcherApp
         from scripts.switcher.model import Window, Pane, SessionGroup
-        from scripts.switcher.state import AppState
+        from scripts.switcher.state import AppState, BROWSE, SEARCH, LOCATE
         from scripts.switcher.render import compute_layout
         p = Pane('%1', 0, '', 'bash', '/tmp', 1, True, 80, 20, 0, 0)
         src = Window('main', '$1', '1', '@1', 0, 'shell', True, False, True, '%1', 'bash', '/tmp', [p])
@@ -33,7 +33,7 @@ class TestRenderLayout(unittest.TestCase):
         from unittest.mock import Mock, patch
         from scripts.switcher.app import SwitcherApp
         from scripts.switcher.model import Window, Pane, SessionGroup
-        from scripts.switcher.state import AppState
+        from scripts.switcher.state import AppState, BROWSE, SEARCH, LOCATE
         from scripts.switcher.render import compute_layout
         p = Pane('%1', 0, '', 'bash', '/tmp', 1, True, 80, 20, 0, 0)
         src = Window('main', '$1', '1', '@1', 0, 'shell', True, False, True, '%1', 'bash', '/tmp', [p])
@@ -63,7 +63,7 @@ class TestRenderLayout(unittest.TestCase):
     def test_top_bar_shows_chinese_mode_and_count_badge(self):
         from unittest.mock import Mock, patch
         from scripts.switcher.app import SwitcherApp
-        from scripts.switcher.state import AppState, Mode
+        from scripts.switcher.state import AppState, BROWSE as Mode_BROWSE, SEARCH as Mode_SEARCH, LOCATE as Mode_LOCATE
         from scripts.switcher.render import compute_layout
         app = SwitcherApp(Mock())
         app.state = AppState.create([], '@1')
@@ -76,7 +76,7 @@ class TestRenderLayout(unittest.TestCase):
         self.assertIn('0 项', top_line)
 
         # Mode SEARCH
-        app.state.mode = Mode.SEARCH
+        app.state.mode = Mode_SEARCH
         app.state.query = 'test'
         screen_search = Mock()
         with patch('scripts.switcher.app.curses.color_pair', return_value=0):
@@ -88,7 +88,7 @@ class TestRenderLayout(unittest.TestCase):
     def test_footer_adapts_to_current_mode(self):
         from unittest.mock import Mock, patch
         from scripts.switcher.app import SwitcherApp
-        from scripts.switcher.state import AppState, Mode
+        from scripts.switcher.state import AppState, BROWSE as Mode_BROWSE, SEARCH as Mode_SEARCH, LOCATE as Mode_LOCATE
         from scripts.switcher.render import compute_layout
         app = SwitcherApp(Mock())
         app.state = AppState.create([], '@1')
@@ -102,7 +102,7 @@ class TestRenderLayout(unittest.TestCase):
         self.assertIn('跨会话', footer_browse)
 
         # Search mode footer
-        app.state.mode = Mode.SEARCH
+        app.state.mode = Mode_SEARCH
         screen_search = Mock()
         with patch('scripts.switcher.app.curses.color_pair', return_value=0):
             app._render_frame(screen_search, layout)
@@ -111,7 +111,7 @@ class TestRenderLayout(unittest.TestCase):
         self.assertIn('返回浏览', footer_search)
 
         # Locate mode footer
-        app.state.mode = Mode.LOCATE
+        app.state.mode = Mode_LOCATE
         screen_locate = Mock()
         with patch('scripts.switcher.app.curses.color_pair', return_value=0):
             app._render_frame(screen_locate, layout)

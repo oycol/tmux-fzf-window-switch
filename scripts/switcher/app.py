@@ -2,41 +2,49 @@
 import curses
 import os
 import sys
-import json
 import time
-import hashlib
-from typing import Optional, List, Dict, Tuple
-from scripts.switcher.model import LayoutInfo, Window, SessionGroup
-from scripts.switcher.state import AppState, Mode
+from scripts.switcher.model import LayoutInfo
+from scripts.switcher.state import AppState, BROWSE, SEARCH, LOCATE
 from scripts.switcher.render import compute_layout, format_path, str_cell_width, truncate_cell
 from scripts.switcher.canvas import render_panes_to_canvas, sanitize_text_line
 from scripts.switcher.tmux import TmuxAdapter
 
 # Exit code signalling the launcher to reopen the popup at the new client size.
 RESIZE_EXIT_CODE = 42
-# Fast poll interval (ms) for responsive debounce without noticeable latency.
-RESIZE_POLL_MS = 100
+# Fast poll interval (ms): two stable polls (~120ms) confirm a resize; keeps
+# drag-following responsive while still debouncing continuous window drags.
+RESIZE_POLL_MS = 60
 
 
 def state_file_path(client_target: str) -> str:
-    h = hashlib.sha256((client_target or "default").encode()).hexdigest()[:16]
-    return f"/tmp/.tmux_switch_state_{h}.json"
+    key = 0
+    for byte in (client_target or "default").encode("utf-8"):
+        key = ((key * 131) ^ byte) & 0xFFFFFFFFFFFFFFFF
+    return "/tmp/.tmux_switch_state_%016x" % key
 
 
+# Line format: mode|query|locate_buf|selected_window_id|show_preview|
+#              preview_detail_mode|selected_pane_idx|show_help
+# (| never appears in the serialized fields except query/locate_buf, which are
+# single printable chars typed by the user — | itself is escaped as \x7c)
 def save_transient_state(client_target: str, data: dict):
     if not client_target:
         return
     path = state_file_path(client_target)
     try:
+        fields = [str(data.get(k, "")) for k in
+                  ("mode", "query", "locate_buf", "selected_window_id",
+                   "show_preview", "preview_detail_mode", "selected_pane_idx", "show_help")]
+        line = "\x1e".join(f.replace("\x1e", "") for f in fields)
         tmp_path = path + ".tmp"
         with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(data, f)
+            f.write(line)
         os.replace(tmp_path, path)
     except Exception:
         pass
 
 
-def load_transient_state(client_target: str) -> Optional[dict]:
+def load_transient_state(client_target: str):
     if not client_target:
         return None
     path = state_file_path(client_target)
@@ -47,14 +55,26 @@ def load_transient_state(client_target: str) -> Optional[dict]:
             os.remove(path)
             return None
         with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+            line = f.read()
         os.remove(path)
+        fields = line.split("\x1e")
+        if len(fields) < 8:
+            return None
+        keys = ("mode", "query", "locate_buf", "selected_window_id",
+                "show_preview", "preview_detail_mode", "selected_pane_idx", "show_help")
+        data = dict(zip(keys, fields))
+        # Re-type booleans/ints from their string forms
+        data["show_preview"] = data["show_preview"] == "True"
+        data["preview_detail_mode"] = data["preview_detail_mode"] == "True"
+        data["show_help"] = data["show_help"] == "True"
+        data["selected_pane_idx"] = int(data["selected_pane_idx"] or 0)
         return data
     except Exception:
         return None
 
 
-def compute_frame_box(total_w: int, total_h: int, scale: float) -> Tuple[int, int, int, int]:
+def compute_frame_box(total_w, total_h, scale):
+    """Centered box at a fractional scale of the full target frame."""
     scale = max(0.1, min(1.0, scale))
     w = max(10, int(total_w * scale))
     h = max(4, int(total_h * scale))
@@ -63,16 +83,20 @@ def compute_frame_box(total_w: int, total_h: int, scale: float) -> Tuple[int, in
     return x, y, w, h
 
 
-def play_opening_animation(stdscr, target_w: int, target_h: int):
-    """Play a lightweight, smooth 2-frame scale-out animation on initial open (~40ms)."""
+# Quadratic ease-out scale progression: fast initial growth, gentle settle.
+# Six frames at ~13ms each keep motion fluid (no two-step "jump") in ~80ms total.
+ANIM_SCALES = (0.42, 0.60, 0.75, 0.87, 0.955, 1.0)
+
+
+def play_opening_animation(stdscr, target_w, target_h):
+    """Play a fluid 6-frame ease-out scale-out animation on initial open (~80ms)."""
     if target_w < 40 or target_h < 12:
         return
     if os.environ.get("TMUX_SWITCH_NO_ANIM") == "1":
         return
 
     border_attr = curses.color_pair(1) if curses.has_colors() else curses.A_NORMAL
-    steps = [0.65, 0.88]
-    for scale in steps:
+    for i, scale in enumerate(ANIM_SCALES):
         bx, by, bw, bh = compute_frame_box(target_w, target_h, scale)
         stdscr.erase()
         try:
@@ -81,13 +105,18 @@ def play_opening_animation(stdscr, target_w: int, target_h: int):
                 stdscr.addstr(by + row, bx, "│", border_attr)
                 stdscr.addstr(by + row, bx + bw - 1, "│", border_attr)
             stdscr.addstr(by + bh - 1, bx, "╰" + "─" * (bw - 2) + "╯", border_attr)
+            # Fade in the title on the last two frames for a smooth finish
+            if i >= len(ANIM_SCALES) - 2:
+                title = " tmux window switcher "
+                stdscr.addstr(by, max(2, bx + (bw - len(title)) // 2), title,
+                              curses.A_BOLD | curses.color_pair(2))
         except curses.error:
             pass
         stdscr.refresh()
-        curses.napms(20)
+        curses.napms(13)
 
 
-def popup_size_for_client(client_w: int, client_h: int) -> Tuple[int, int]:
+def popup_size_for_client(client_w, client_h):
     """Popup (w, h) for a client size; mirrors the thresholds in switch.sh."""
     if client_w >= 220:
         popup_w = client_w * 55 // 100
@@ -109,17 +138,17 @@ def popup_size_for_client(client_w: int, client_h: int) -> Tuple[int, int]:
 
 
 class SwitcherApp:
-    def __init__(self, adapter: TmuxAdapter):
+    def __init__(self, adapter):
         self.adapter = adapter
-        self.state: Optional[AppState] = None
-        self.pane_cache: Dict[str, List[str]] = {}
+        self.state = None
+        self.pane_cache = {}
         # Popup size this process was launched with; None disables resize polling.
-        self.popup_size: Optional[Tuple[int, int]] = None
-        self.is_resumed: bool = False
-        self.pending_resize_target: Optional[Tuple[int, int]] = None
-        self.has_played_open_anim: bool = False
+        self.popup_size = None
+        self.is_resumed = False
+        self.pending_resize_target = None
+        self.has_played_open_anim = False
 
-    def _handle_resize(self) -> bool:
+    def _handle_resize(self):
         """True when the client was resized, stabilized (debounced), and should reopen."""
         if self.popup_size is None:
             return False
@@ -216,7 +245,7 @@ class SwitcherApp:
             if self._handle_input(ch):
                 break
 
-    def _render_frame(self, stdscr, layout: LayoutInfo):
+    def _render_frame(self, stdscr, layout):
         # 1. Outer Border with rounded corners (╭, ╮, ╰, ╯)
         w = layout.total_w
         h = layout.total_h
@@ -250,11 +279,11 @@ class SwitcherApp:
             pass
 
         # 2. Top Mode and Input line (y=1)
-        mode_label = {Mode.BROWSE: "浏览", Mode.SEARCH: "搜索", Mode.LOCATE: "定位"}[self.state.mode]
+        mode_label = {BROWSE: "浏览", SEARCH: "搜索", LOCATE: "定位"}[self.state.mode]
         mode_str = f"[{mode_label}] "
-        if self.state.mode == Mode.SEARCH:
+        if self.state.mode == SEARCH:
             input_content = f"/ {self.state.query}"
-        elif self.state.mode == Mode.LOCATE:
+        elif self.state.mode == LOCATE:
             input_content = self.state.locate_buf
         else:
             if self.state.query:
@@ -323,12 +352,12 @@ class SwitcherApp:
             help_text = " 帮助视图  ·  ? / Esc 返回 "
         elif self.state.status_msg:
             help_text = f" ! {self.state.status_msg} "
-        elif self.state.mode == Mode.SEARCH:
+        elif self.state.mode == SEARCH:
             if layout.help_w >= 80:
                 help_text = " [Enter] 确认切换  [↑/↓] 选择结果  [Backspace] 修改  [Esc] 返回浏览 "
             else:
                 help_text = " Enter:切换 ↑/↓:选择 Backspace:修改 Esc:返回 "
-        elif self.state.mode == Mode.LOCATE:
+        elif self.state.mode == LOCATE:
             if layout.help_w >= 80:
                 help_text = " [Enter] 确认跳转  [2.2/:bios:2] 精确定位  [Backspace] 修改  [Esc] 取消定位 "
             else:
@@ -349,7 +378,7 @@ class SwitcherApp:
         if self.state.show_help:
             self._render_help(stdscr, layout)
 
-    def _render_help(self, stdscr, layout: LayoutInfo):
+    def _render_help(self, stdscr, layout):
         """Use the body as a readable help page; keep the footer full-width."""
         lines = [
             "操作帮助  ·  ? / Esc 返回",
@@ -372,7 +401,7 @@ class SwitcherApp:
                           clipped + " " * (layout.inner_w - str_cell_width(clipped)),
                           curses.color_pair(5))
 
-    def _render_list(self, stdscr, layout: LayoutInfo):
+    def _render_list(self, stdscr, layout):
         # The row above help is reserved for a full-width separator.
         max_rows = layout.body_bottom_y - layout.body_top_y + 1
         if max_rows <= 0:
@@ -444,7 +473,7 @@ class SwitcherApp:
             except Exception:
                 pass
 
-    def _render_preview(self, stdscr, layout: LayoutInfo):
+    def _render_preview(self, stdscr, layout):
         w = self.state.selected_window
         if not w:
             return
@@ -483,13 +512,13 @@ class SwitcherApp:
             except Exception:
                 pass
 
-    def _handle_input(self, ch: int) -> bool:
+    def _handle_input(self, ch):
         """Handle key input. Returns True if application should exit."""
         # Key conversions
         if ch == 27: # Escape
             if self.state.show_help:
                 self.state.show_help = False
-            elif self.state.mode in (Mode.SEARCH, Mode.LOCATE):
+            elif self.state.mode in (SEARCH, LOCATE):
                 self.state.handle_key("ESC")
             else:
                 return True
@@ -500,11 +529,11 @@ class SwitcherApp:
                 self.state.show_help = False
             return False
 
-        if ch == ord('q') and self.state.mode == Mode.BROWSE:
+        if ch == ord('q') and self.state.mode == BROWSE:
             return True
 
         elif ch in (curses.KEY_ENTER, 10, 13):
-            if self.state.mode == Mode.LOCATE:
+            if self.state.mode == LOCATE:
                 target = self.state.resolve_locate_target()
             else:
                 target = self.state.selected_window if self.state.selected_window_id in {
@@ -525,14 +554,14 @@ class SwitcherApp:
             return True
 
         # Detail mode toggle: 'v'
-        if ch == ord('v') and self.state.mode == Mode.BROWSE:
+        if ch == ord('v') and self.state.mode == BROWSE:
             self.state.preview_detail_mode = not self.state.preview_detail_mode
             return False
 
         # Cycle preview pane in BROWSE: '[' / ']' when preview is active
         # Spec clause 14:
         # "[/] cycles preview pane in BROWSE without switching target active pane."
-        if self.state.mode == Mode.BROWSE:
+        if self.state.mode == BROWSE:
             if ch == ord('['):
                 if self.state.selected_window and self.state.selected_window.panes:
                     n_panes = len(self.state.selected_window.panes)
@@ -546,7 +575,7 @@ class SwitcherApp:
 
         # Ctrl-x (kill window)
         if ch == 24: # Ctrl-x
-            if self.state.mode == Mode.BROWSE:
+            if self.state.mode == BROWSE:
                 if self.state.can_delete_selected():
                     wid_to_del = self.state.selected_window_id
                     ok, err = self.adapter.kill_window(wid_to_del, self.state.source_window_id)
@@ -567,11 +596,11 @@ class SwitcherApp:
                     self.state.status_msg = "Delete disabled. Move selection first."
             return False
 
-        if ch == 16 and self.state.mode == Mode.BROWSE: # Ctrl-p
+        if ch == 16 and self.state.mode == BROWSE: # Ctrl-p
             self.state.show_preview = not self.state.show_preview
             return False
 
-        if ch == 18 and self.state.mode == Mode.BROWSE: # Ctrl-r
+        if ch == 18 and self.state.mode == BROWSE: # Ctrl-r
             try:
                 fresh, src = self.adapter.get_snapshot()
                 if src != self.state.source_window_id:
@@ -583,7 +612,7 @@ class SwitcherApp:
                 self.state.status_msg = f"Refresh failed: {exc}"
             return False
 
-        if ch == 21 and self.state.mode == Mode.BROWSE: # Ctrl-u
+        if ch == 21 and self.state.mode == BROWSE: # Ctrl-u
             self.state.query = ""
             self.state.reconcile_selection()
             return False
@@ -611,14 +640,13 @@ class SwitcherApp:
         return False
 
 class SwitcherArgs:
-    def __init__(self, socket: Optional[str] = None, client: Optional[str] = None,
-                 popup_size: Optional[Tuple[int, int]] = None):
+    def __init__(self, socket=None, client=None, popup_size=None):
         self.socket = socket
         self.client = client
         self.popup_size = popup_size
 
 
-def parse_args(argv: List[str]) -> SwitcherArgs:
+def parse_args(argv):
     """Lightweight zero-dependency CLI argument parser (replaces heavy argparse)."""
     socket = None
     client = None

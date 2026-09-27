@@ -41,7 +41,7 @@ class TestNavigation(unittest.TestCase):
         self.groups = [self.g1, self.g2]
 
     def test_navigation_cycles_and_skips_source_and_headers(self):
-        from scripts.switcher.state import AppState, Mode
+        from scripts.switcher.state import AppState, BROWSE as Mode_BROWSE, SEARCH as Mode_SEARCH, LOCATE as Mode_LOCATE
 
         state = AppState.create(self.groups, source_window_id="@0")
         # Native session-last is not a global return target.
@@ -58,7 +58,7 @@ class TestNavigation(unittest.TestCase):
         self.assertEqual(state.selected_window.window_id, "@4")
 
     def test_session_jump_J_K(self):
-        from scripts.switcher.state import AppState
+        from scripts.switcher.state import AppState, BROWSE, SEARCH, LOCATE
 
         state = AppState.create(self.groups, source_window_id="@0")
         # Initially at @2 (in s1)
@@ -79,7 +79,7 @@ class TestNavigation(unittest.TestCase):
         self.assertEqual(state.selected_window.window_id, "@1")
 
     def test_tab_is_unbound(self):
-        from scripts.switcher.state import AppState
+        from scripts.switcher.state import AppState, BROWSE, SEARCH, LOCATE
         state = AppState.create(self.groups, source_window_id="@0")
         before = state.selected_window_id
         state.handle_key("\t")

@@ -1,14 +1,43 @@
 """Fixed 2D canvas preview for multi-pane tmux windows."""
-import re
-from typing import List, Dict, Tuple
 from scripts.switcher.model import Pane
 from scripts.switcher.render import wcwidth_char, str_cell_width, truncate_cell
 
-ANSI_ESCAPE_RE = re.compile(r'\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
 
 def strip_ansi(s: str) -> str:
-    """Remove ANSI SGR and terminal escape codes safely."""
-    return ANSI_ESCAPE_RE.sub('', s)
+    """Remove ANSI escape sequences without importing re (startup fast path)."""
+    out = []
+    i = 0
+    n = len(s)
+    while i < n:
+        c = s[i]
+        if c == "\x1b":
+            nxt = s[i + 1] if i + 1 < n else ""
+            if nxt == "[":
+                # CSI: skip to final byte in @-~ range
+                j = i + 2
+                while j < n and not ("@" <= s[j] <= "~"):
+                    j += 1
+                i = j + 1
+                continue
+            if nxt in ("]", "P", "X", "^", "_"):
+                # OSC / DCS / SOS / PM / APC: skip to BEL or ST
+                j = i + 2
+                while j < n:
+                    if s[j] == "\x07":
+                        j += 1
+                        break
+                    if s[j] == "\x1b" and j + 1 < n and s[j + 1] == "\\":
+                        j += 2
+                        break
+                    j += 1
+                i = j
+                continue
+            # Two-byte escape (e.g. ESC ( B, ESC 7)
+            i += 2
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
 
 def sanitize_text_line(s: str, max_w: int) -> str:
     """Strip ANSI escapes and clamp length to max_w terminal display cells."""
@@ -17,12 +46,7 @@ def sanitize_text_line(s: str, max_w: int) -> str:
     filtered = "".join(c for c in clean if c.isprintable() or c == ' ')
     return truncate_cell(filtered, max_w)
 
-def render_panes_to_canvas(
-    panes: List[Pane],
-    canvas_w: int,
-    canvas_h: int,
-    pane_contents: Dict[str, List[str]]
-) -> List[str]:
+def render_panes_to_canvas(panes, canvas_w, canvas_h, pane_contents):
     """
     Render multiple panes onto a fixed 2D canvas of size canvas_w x canvas_h.
     Uses proportional geometry without row redistribution.
