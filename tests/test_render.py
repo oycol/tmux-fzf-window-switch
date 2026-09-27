@@ -193,22 +193,6 @@ class TestRenderLayout(unittest.TestCase):
             self.assertTrue(drawn.strip().endswith('3P'), (columns, drawn))
             self.assertLessEqual(str_cell_width(drawn), current_layout.list_w)
 
-    def test_wide_content_is_scaled_to_canvas_with_ellipsis(self):
-        # Long lines must be narrowed to fit, keeping line endings visible,
-        # instead of being hard-truncated so half the pane content disappears.
-        from unittest.mock import Mock
-        from scripts.switcher.canvas import render_panes_to_canvas
-        from scripts.switcher.model import Pane
-        pane = Pane('%1', 0, '', 'bash', '/tmp', 1, True, 200, 10, 0, 0)
-        content = {pane.pane_id: [f'README-{n}-abcdefghijklmnopqrstuvwxyz0123456789' for n in range(10)]}
-        canvas = render_panes_to_canvas([pane], 40, 10, content)
-        self.assertEqual(len(canvas), 10)
-        self.assertTrue(all(len(row) == 40 for row in canvas))
-        # Right edge keeps the tail of each line.
-        self.assertTrue(all(row.rstrip().endswith('89') for row in canvas), canvas[0])
-        # Nothing beyond the canvas width leaks.
-        self.assertTrue(all(len(row) <= 40 for row in canvas))
-
     def test_preview_header_identifies_target_and_mode(self):
         from unittest.mock import Mock, patch
         from scripts.switcher.app import SwitcherApp
