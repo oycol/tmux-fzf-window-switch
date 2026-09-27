@@ -28,6 +28,24 @@ class TmuxAdapter:
             raise RuntimeError(err.strip() or "Client identity unavailable")
         return "@window_switch_return_" + hashlib.sha256(out.strip().encode()).hexdigest()[:24]
 
+    def get_client_size(self) -> Tuple[int, int]:
+        """Return (width, height) of the target client, or (0, 0) if unavailable."""
+        if not self.client_target:
+            return (0, 0)
+        code, out, _ = self._cmd([
+            "display-message", "-c", self.client_target, "-p",
+            "#{client_width}\t#{client_height}"
+        ])
+        if code != 0:
+            return (0, 0)
+        parts = out.strip().split("\t")
+        if len(parts) != 2:
+            return (0, 0)
+        try:
+            return (int(parts[0]), int(parts[1]))
+        except ValueError:
+            return (0, 0)
+
     def get_return_window_id(self) -> Optional[str]:
         code, out, err = self._cmd(["show-options", "-gqv", self._return_option()])
         if code != 0:

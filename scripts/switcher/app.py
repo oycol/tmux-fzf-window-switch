@@ -3,18 +3,56 @@ import curses
 import os
 import sys
 import argparse
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Tuple
 from scripts.switcher.model import LayoutInfo, Window, SessionGroup
 from scripts.switcher.state import AppState, Mode
 from scripts.switcher.render import compute_layout, format_path, str_cell_width, truncate_cell
 from scripts.switcher.canvas import render_panes_to_canvas, sanitize_text_line
 from scripts.switcher.tmux import TmuxAdapter
 
+# Exit code signalling the launcher to reopen the popup at the new client size.
+RESIZE_EXIT_CODE = 42
+# How often (ms) to poll client size while idle.
+RESIZE_POLL_MS = 400
+
+
+def popup_size_for_client(client_w: int, client_h: int) -> Tuple[int, int]:
+    """Popup (w, h) for a client size; mirrors the thresholds in switch.sh."""
+    if client_w >= 220:
+        popup_w = client_w * 55 // 100
+        popup_w = min(popup_w, 165)
+        popup_w = max(popup_w, 135)
+    elif client_w >= 140:
+        popup_w = client_w * 75 // 100
+    else:
+        popup_w = client_w * 90 // 100
+
+    if client_h >= 60:
+        popup_h = client_h * 72 // 100
+    elif client_h >= 35:
+        popup_h = client_h * 78 // 100
+    else:
+        popup_h = client_h - 2
+        popup_h = max(popup_h, 14)
+    return (popup_w, popup_h)
+
+
 class SwitcherApp:
     def __init__(self, adapter: TmuxAdapter):
         self.adapter = adapter
         self.state: Optional[AppState] = None
         self.pane_cache: Dict[str, List[str]] = {}
+        # Popup size this process was launched with; None disables resize polling.
+        self.popup_size: Optional[Tuple[int, int]] = None
+
+    def _handle_resize(self) -> bool:
+        """True when the client was resized and the popup should be reopened."""
+        if self.popup_size is None:
+            return False
+        cw, ch = self.adapter.get_client_size()
+        if cw <= 0 or ch <= 0:
+            return False
+        return popup_size_for_client(cw, ch) != self.popup_size
 
     def init_state(self):
         groups, src_wid = self.adapter.get_snapshot()
@@ -25,6 +63,9 @@ class SwitcherApp:
         curses.curs_set(0) # Hide cursor
         stdscr.keypad(True)
         curses.use_default_colors()
+        # Poll client size while idle so the popup can follow client resize.
+        if self.popup_size is not None:
+            stdscr.timeout(RESIZE_POLL_MS)
 
         # Initialize color pairs
         # 1: Normal border/dim
@@ -55,6 +96,8 @@ class SwitcherApp:
                 ch = stdscr.getch()
                 if ch in (ord('q'), 27):
                     break
+                if ch == -1 and self._handle_resize():
+                    sys.exit(RESIZE_EXIT_CODE)
                 continue
 
             layout = compute_layout(w, h, preview_pct=60, show_preview=self.state.show_preview)
@@ -63,6 +106,11 @@ class SwitcherApp:
 
             ch = stdscr.getch()
             if ch == -1:
+                # Idle timeout: check whether the client was resized; if so,
+                # exit with RESIZE_EXIT_CODE so the launcher reopens the popup
+                # at the new size (tmux popups never follow client resize).
+                if self._handle_resize():
+                    sys.exit(RESIZE_EXIT_CODE)
                 continue
 
             # Process key
@@ -467,6 +515,8 @@ def main():
     parser = argparse.ArgumentParser(description="tmux window switcher")
     parser.add_argument("--socket", help="tmux socket path")
     parser.add_argument("--client", help="tmux client target")
+    parser.add_argument("--popup-size", metavar="WxH",
+                        help="popup dimensions the launcher used; enables resize follow")
     args = parser.parse_args()
 
     sock = args.socket or os.environ.get("TMUX_SOCKET")
@@ -478,6 +528,12 @@ def main():
         parser.error("Explicit --client is required for per-client switch history")
     adapter = TmuxAdapter(socket_path=sock, client_target=client)
     app = SwitcherApp(adapter)
+    if args.popup_size:
+        try:
+            pw, ph = args.popup_size.lower().split("x", 1)
+            app.popup_size = (int(pw), int(ph))
+        except ValueError:
+            parser.error("--popup-size must look like 90x30")
     curses.wrapper(app.run)
 
 if __name__ == "__main__":
